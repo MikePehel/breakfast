@@ -62,6 +62,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./com.startscreem.breakpal_V0.1.xrnx
-          asset_name: com.startscreem.breakpal_V0.1.xrnx
+          asset_path: ./com.startscreem.breakfast_V0.1.xrnx
+          asset_name: com.startscreem.breakfast_V0.1.xrnx
           asset_content_type: application/octet-stream
