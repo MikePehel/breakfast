@@ -1407,19 +1407,39 @@ local function create_all_symbol_columns()
         local symbol_col = vb:column {
             width = 200,
             margin = 5,
-            style = "panel",
-            
-            -- Symbol header
-            vb:horizontal_aligner {
-                mode = "center",
-                vb:text {
-                    text = symbol,
-                    font = "big",
-                    style = "strong"
-                }
-            },
-            vb:space { height = 5 }
+            style = "panel"
         }
+        
+        -- Add placement button if symbol exists, otherwise show symbol text
+        if formatted_labels[symbol] and #formatted_labels[symbol] > 0 then
+            symbol_col:add_child(
+                vb:horizontal_aligner {
+                    mode = "center",
+                    vb:button {
+                        text = symbol,
+                        width = 35,
+                        height = 25,
+                        notifier = function()
+                            editor.place_symbol(symbol)
+                        end
+                    }
+                }
+            )
+        else
+            -- Show disabled text for symbols that don't exist
+            symbol_col:add_child(
+                vb:horizontal_aligner {
+                    mode = "center",
+                    vb:text {
+                        text = symbol,
+                        font = "big",
+                        style = "disabled"
+                    }
+                }
+            )
+        end
+        
+        symbol_col:add_child(vb:space { height = 5 })
         
         -- Add formatted labels if they exist, otherwise show placeholder
         if formatted_labels[symbol] and #formatted_labels[symbol] > 0 then
@@ -2037,19 +2057,39 @@ local dialog_content = vb:column {
                             local symbol_col = vb:column {
                                 width = 120,
                                 margin = 3,
-                                style = "panel",
-                                
-                                -- Symbol header
-                                vb:horizontal_aligner {
-                                    mode = "center",
-                                    vb:text {
-                                        text = symbol,
-                                        font = "big",
-                                        style = "strong"
-                                    }
-                                },
-                                vb:space { height = 3 }
+                                style = "panel"
                             }
+                            
+                            -- Add placement button if symbol exists, otherwise show disabled text
+                            if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
+                                symbol_col:add_child(
+                                    vb:horizontal_aligner {
+                                        mode = "center",
+                                        vb:button {
+                                            text = symbol,
+                                            width = 35,
+                                            height = 25,
+                                            notifier = function()
+                                                editor.place_symbol(symbol)
+                                            end
+                                        }
+                                    }
+                                )
+                            else
+                                -- Show disabled text for symbols that don't exist
+                                symbol_col:add_child(
+                                    vb:horizontal_aligner {
+                                        mode = "center",
+                                        vb:text {
+                                            text = symbol,
+                                            font = "big",
+                                            style = "disabled"
+                                        }
+                                    }
+                                )
+                            end
+                            
+                            symbol_col:add_child(vb:space { height = 5 })
                             
                             -- Add formatted labels if they exist, otherwise show placeholder
                             if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
