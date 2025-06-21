@@ -176,6 +176,47 @@ function syntax.prepare_symbol_labels(sets, saved_labels)
     return symbol_labels
 end
 
+-- Helper function to format range symbol labels (same logic as selection.lua)
+local function format_range_symbol_label(timing, saved_labels)
+    local line_str = string.format("%02d", timing.relative_line)
+    local note_str = ""
+    if timing.note_value == 120 then 
+        note_str = "OFF"
+    elseif timing.note_value == 121 then 
+        note_str = "---"
+    else
+        local octave = math.floor(timing.note_value / 12) - 2
+        local note_names = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"}
+        local note_index = (timing.note_value % 12) + 1
+        note_str = string.format("%s%d", note_names[note_index], octave)
+    end
+    local delay_str = string.format("d%02X", timing.new_delay)
+    local inst_str = string.format("I%02X", (timing.source_instrument_index or 1) - 1)
+    
+    -- Get label from saved_labels if available (same logic as selection.lua)
+    local label_str = ""
+    if saved_labels then
+        -- Calculate slice index from note value (same as apply_labels_to_range_symbol)
+        local note_value = timing.note_value
+        local slice_index = 0
+        if note_value >= 37 then
+            slice_index = note_value - 36
+        end
+        local hex_key = string.format("%02X", slice_index + 1)
+        
+        local label_data = saved_labels[hex_key]
+        if label_data and label_data.label and label_data.label ~= "" then
+            label_str = pad_with_underscores(label_data.label, 5)
+        else
+            label_str = "_____"
+        end
+    else
+        label_str = "_____"
+    end
+    
+    return string.format("%s-%s-%s-%s", line_str, label_str, delay_str, inst_str)
+end
+
 -- Prepare formatted labels from global symbol registry
 function syntax.prepare_global_symbol_labels(global_registry)
     local symbol_labels = {}
@@ -186,17 +227,19 @@ function syntax.prepare_global_symbol_labels(global_registry)
             
             -- Check if this is a range-captured symbol (different formatting logic)
             if symbol_data.symbol_type == "range_captured" then
-                -- For range symbols, use timing data to get the correct instrument values
-                for i, note in ipairs(symbol_data.break_set.notes) do
-                    local timing = symbol_data.break_set.timing[i]
-                    if timing then
-                        local hex_key = string.format("%02X", note.instrument_value + 1)
-                        local label = "" -- Range symbols don't have slice labels
-                        
-                        -- Use the source_instrument_index from timing data for accurate display
-                        local source_instrument_index = timing.source_instrument_index
-                        table.insert(symbol_labels[symbol], syntax.format_break_label(note, label, source_instrument_index))
+                local label_count = 0
+                if symbol_data.saved_labels then
+                    for _ in pairs(symbol_data.saved_labels) do
+                        label_count = label_count + 1
                     end
+                end
+                print("DEBUG: Formatting range symbol " .. symbol .. " with " .. label_count .. " labels")
+                
+                -- For range symbols, use timing data to get the correct formatting with labels
+                for i, timing in ipairs(symbol_data.break_set.timing) do
+                    local formatted_label = format_range_symbol_label(timing, symbol_data.saved_labels)
+                    table.insert(symbol_labels[symbol], formatted_label)
+                    print("DEBUG: Range symbol " .. symbol .. " line " .. i .. ": " .. formatted_label)
                 end
             else
                 -- Original logic for breakpoint symbols

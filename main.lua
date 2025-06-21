@@ -6,6 +6,7 @@ local syntax = require("syntax")
 local utils = require("utils")
 local editor = require("editor")
 local selection = require("selection")
+local input_lock = require("input_lock")
 local json = require("json")
 
 
@@ -21,6 +22,12 @@ local composite_symbols = {"U", "V", "W", "X", "Y", "Z"}
 
 -- Current dialog ViewBuilder reference for composite keybindings
 local current_dialog_vb = nil
+
+-- UI collapse state
+local ui_collapsed = false
+
+-- Right column collapse state
+local right_column_collapsed = false
 
 -- Store formatted labels at module level for pagination access
 local current_formatted_labels = {}
@@ -55,9 +62,39 @@ local instrument_source_behavior = {
 
 local current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
 
+-- Input lock state and callback
+local input_lock_active = false
+local current_dialog_vb = nil
+
+-- Symbol button feedback tracking
+local symbol_button_refs = {} -- Store references to symbol buttons for highlighting
+
+-- Tag system state
+local category_view_enabled = false  -- Toggle state for ≡/… button (keep same name for UI compatibility)
+local tag_editing_states = {}       -- Track which symbols have saved tags: symbol -> {tag_index -> boolean}
+local color_editing_states = {}     -- Track which symbols have saved colors: symbol -> boolean
+
 -- Global symbol registry for cross-instrument symbol management
 local global_symbol_registry = {}
 local available_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+
+-- Color definitions for symbol color coding (Using Matched Saturation Hex and 35% Darker OKHSL)
+local color_definitions = {
+  [""] = {original = nil, darker = nil}, -- No color
+  ["Green"] = {original = {0x9d, 0xeb, 0x6d}, darker = {0x40, 0x89, 0x00}},
+  ["Pink"] = {original = {0xf5, 0x72, 0xb2}, darker = {0x9d, 0x1d, 0x66}},
+  ["Purple"] = {original = {0xb5, 0x72, 0xf5}, darker = {0x6d, 0x24, 0xa5}},
+  ["Blue"] = {original = {0x71, 0xb2, 0xf2}, darker = {0x1f, 0x62, 0x9c}},
+  ["Yellow"] = {original = {0xdd, 0xdd, 0x67}, darker = {0x7e, 0x7c, 0x00}},
+  ["Orange"] = {original = {0xef, 0xb0, 0x6f}, darker = {0x93, 0x5a, 0x10}},
+  ["Red"] = {original = {0xf5, 0x72, 0x72}, darker = {0x9f, 0x20, 0x2b}}
+}
+
+-- Color dropdown items (ordered list for popup)
+local color_dropdown_items = {"", "Green", "Pink", "Purple", "Blue", "Yellow", "Orange", "Red"}
+
+-- Color editing states (similar to category system)
+local color_editing_states = {}
 
 -- Set up tool preferences for global symbol registry persistence (declare early)
 local preferences = renoise.Document.create("BreakFastPreferences") {
@@ -101,6 +138,113 @@ local function serialize_table(t, indent)
     return result
 end
 
+-- Input lock visual update callback
+local function update_input_lock_visual(is_active)
+    input_lock_active = is_active
+    
+    -- Update dialog if it exists and has the input lock indicator
+    if current_dialog_vb and current_dialog_vb.views.input_lock_status then
+        if is_active then
+            current_dialog_vb.views.input_lock_status.text = "INPUT LOCK ACTIVE"
+            current_dialog_vb.views.input_lock_status.style = "strong"
+        else
+            current_dialog_vb.views.input_lock_status.text = "Input Lock"
+            current_dialog_vb.views.input_lock_status.style = "normal"
+        end
+    end
+    
+    if current_dialog_vb and current_dialog_vb.views.input_lock_description then
+        if is_active then
+            current_dialog_vb.views.input_lock_description.text = "Type symbol keys (A-T, 0-9) or ESC to exit"
+            current_dialog_vb.views.input_lock_description.style = "italic"
+        else
+            current_dialog_vb.views.input_lock_description.text = "Double-press Ctrl to activate"
+            current_dialog_vb.views.input_lock_description.style = "italic"
+        end
+    end
+    
+    -- Update compact input lock indicator if it exists
+    if current_dialog_vb and current_dialog_vb.views.compact_input_lock_indicator then
+        if is_active then
+            current_dialog_vb.views.compact_input_lock_indicator.text = "[-]"
+            current_dialog_vb.views.compact_input_lock_indicator.style = "strong"
+        else
+            current_dialog_vb.views.compact_input_lock_indicator.text = "[O]"
+            current_dialog_vb.views.compact_input_lock_indicator.style = "normal"
+        end
+    end
+end
+
+-- Input lock visual update callback
+local function update_input_lock_visual(is_active)
+    input_lock_active = is_active
+    
+    -- Update dialog if it exists and has the input lock indicator
+    if current_dialog_vb and current_dialog_vb.views.input_lock_status then
+        if is_active then
+            current_dialog_vb.views.input_lock_status.text = "INPUT LOCK ACTIVE"
+            current_dialog_vb.views.input_lock_status.style = "strong"
+        else
+            current_dialog_vb.views.input_lock_status.text = "Input Lock"
+            current_dialog_vb.views.input_lock_status.style = "normal"
+        end
+    end
+    
+    if current_dialog_vb and current_dialog_vb.views.input_lock_description then
+        if is_active then
+            current_dialog_vb.views.input_lock_description.text = "Type symbol keys (A-T, 0-9) or ESC to exit"
+            current_dialog_vb.views.input_lock_description.style = "disabled"
+        else
+            current_dialog_vb.views.input_lock_description.text = "Double-press Ctrl to activate"
+            current_dialog_vb.views.input_lock_description.style = "disabled"
+        end
+    end
+    
+    -- Update compact input lock indicator if it exists
+    if current_dialog_vb and current_dialog_vb.views.compact_input_lock_indicator then
+        if is_active then
+            current_dialog_vb.views.compact_input_lock_indicator.text = "[-]"
+            current_dialog_vb.views.compact_input_lock_indicator.style = "strong"
+        else
+            current_dialog_vb.views.compact_input_lock_indicator.text = "[O]"
+            current_dialog_vb.views.compact_input_lock_indicator.style = "normal"
+        end
+    end
+end
+
+-- Symbol button feedback callback
+local function update_symbol_feedback(symbol, is_highlighted)
+    if not current_dialog_vb or not symbol_button_refs[symbol] then
+        return
+    end
+    
+    local button = symbol_button_refs[symbol]
+    if is_highlighted then
+        -- Highlight the button (make it appear pressed/active)
+        local symbol_color = get_symbol_color(symbol)
+        if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
+            -- Use original (brighter) color when pressed
+            button.color = color_definitions[symbol_color].original
+        else
+            -- Yellow highlight for symbols without custom colors
+            button.color = {0xFF, 0xFF, 0x00}
+        end
+    else
+        -- Return to normal appearance
+        local symbol_color = get_symbol_color(symbol)
+        if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
+            -- Use darker color for normal state
+            button.color = color_definitions[symbol_color].darker
+        else
+            -- Default theme color for symbols without custom colors
+            button.color = {0x00, 0x00, 0x00}
+        end
+    end
+    
+    print("DEBUG: Symbol button " .. symbol .. " feedback: " .. (is_highlighted and "highlighted" or "normal"))
+end
+
+
 -- Global symbol registry management functions
 function get_global_symbol_registry()
     return global_symbol_registry
@@ -141,7 +285,9 @@ function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels
         global_symbol_registry[symbol] = {
             instrument_index = instrument_index,
             break_set = break_sets[i],
-            saved_labels = saved_labels
+            saved_labels = saved_labels,
+            tags = {},      -- Initialize empty tags array
+            color = ""      -- Initialize empty color
         }
     end
     
@@ -153,33 +299,630 @@ function get_symbol_instrument_mapping(symbol)
     return registry_entry and registry_entry.instrument_index or nil
 end
 
--- Clear all symbols from the global registry
-function clear_all_symbols()
-    print("DEBUG: Clearing all symbols from global registry")
+-- Tag system functions
+function toggle_tag_view(vb)
+    category_view_enabled = not category_view_enabled  -- Keep same variable name for UI compatibility
     
-    -- Clear the in-memory registry
-    global_symbol_registry = {}
+    -- Update toggle button text
+    if vb.views.category_toggle then
+        vb.views.category_toggle.text = category_view_enabled and "…" or "≡"
+    end
     
-    -- Clear the persisted data
-    preferences.global_symbol_registry_data.value = ""
+    -- Update visibility of all tag rows and color rows
+    for _, symbol in ipairs(available_symbols) do
+        -- Update visibility of tag container
+        local tag_container = vb.views["tag_container_" .. symbol]
+        if tag_container then
+            tag_container.visible = category_view_enabled
+        end
+        
+        -- Update visibility of color rows
+        local color_row = vb.views["color_row_" .. symbol]
+        if color_row then
+            color_row.visible = category_view_enabled
+        end
+    end
     
-    -- Update current formatted labels to reflect the cleared state
-    current_formatted_labels = {}
+    print("DEBUG: Tag view toggled to " .. (category_view_enabled and "enabled" or "disabled"))
+end
+
+function get_symbol_tags(symbol)
+    local registry_entry = global_symbol_registry[symbol]
+    if registry_entry then
+        -- Handle backward compatibility: convert old category to tags array
+        if registry_entry.category and not registry_entry.tags then
+            registry_entry.tags = registry_entry.category ~= "" and {registry_entry.category} or {}
+            registry_entry.category = nil  -- Remove old category field
+        end
+        return registry_entry.tags or {}
+    end
+    return {}
+end
+
+function get_tag_count(symbol)
+    local tags = get_symbol_tags(symbol)
+    return math.max(1, #tags)  -- Minimum of 1 tag input
+end
+
+function save_symbol_tag(symbol, tag_index, tag_text, vb)
+    if not global_symbol_registry[symbol] then
+        print("DEBUG: Cannot save tag for symbol " .. symbol .. " - symbol not in registry")
+        return false
+    end
     
-    print("DEBUG: All symbols cleared from registry and preferences")
+    -- Initialize tags array if it doesn't exist
+    if not global_symbol_registry[symbol].tags then
+        global_symbol_registry[symbol].tags = {}
+    end
     
-    -- Refresh the main dialog if it's open to show the cleared state
+    -- Save tag to registry
+    if tag_text and tag_text ~= "" then
+        global_symbol_registry[symbol].tags[tag_index] = tag_text
+    else
+        -- Remove empty tag
+        table.remove(global_symbol_registry[symbol].tags, tag_index)
+    end
+    
+    -- Update editing state - true means saved/locked, false means editing
+    local has_tag = tag_text and tag_text ~= ""
+    if not tag_editing_states[symbol] then
+        tag_editing_states[symbol] = {}
+    end
+    tag_editing_states[symbol][tag_index] = has_tag
+    
+    -- Update UI to show saved state (locked)
+    if vb then
+        update_tag_ui_state(symbol, tag_index, has_tag, tag_text, vb)
+    end
+    
+    -- Persist to preferences
+    save_global_symbol_registry()
+    
+    print("DEBUG: Saved tag " .. tag_index .. " '" .. (tag_text or "") .. "' for symbol " .. symbol)
+    
+    local status_msg = has_tag and 
+        ("Tag saved for symbol " .. symbol .. ": " .. tag_text) or
+        ("Tag cleared for symbol " .. symbol)
+    renoise.app():show_status(status_msg)
+    
+    return true
+end
+
+function unlock_symbol_tag(symbol, tag_index, vb)
+    -- Set editing state to false (unlocked for editing)
+    if not tag_editing_states[symbol] then
+        tag_editing_states[symbol] = {}
+    end
+    tag_editing_states[symbol][tag_index] = false
+    
+    -- Get current tag text
+    local current_tags = get_symbol_tags(symbol)
+    local current_tag = current_tags[tag_index] or ""
+    
+    -- Update UI to show editing state (unlocked)
+    update_tag_ui_state(symbol, tag_index, false, current_tag, vb)
+    
+    print("DEBUG: Unlocked tag " .. tag_index .. " editing for symbol " .. symbol)
+    renoise.app():show_status("Tag editing unlocked for symbol " .. symbol)
+end
+
+function add_tag_input(symbol, vb)
+    local current_count = get_tag_count(symbol)
+    if current_count >= 5 then
+        renoise.app():show_warning("Maximum 5 tags allowed per symbol")
+        return false
+    end
+    
+    -- Preserve any unsaved tag inputs before refresh
+    preserve_unsaved_tag_inputs(symbol, vb)
+    
+    local new_tag_index = current_count + 1
+    
+    -- Initialize tag editing state
+    if not tag_editing_states[symbol] then
+        tag_editing_states[symbol] = {}
+    end
+    tag_editing_states[symbol][new_tag_index] = false  -- Start in editing mode
+    
+    -- Add empty tag to registry
+    if not global_symbol_registry[symbol].tags then
+        global_symbol_registry[symbol].tags = {}
+    end
+    table.insert(global_symbol_registry[symbol].tags, "")
+    
+    -- Persist changes and refresh dialog
+    save_global_symbol_registry()
+    
     if dialog and dialog.visible then
         dialog:close()
         show_main_dialog()
     end
     
-    renoise.app():show_status("All symbols cleared from global registry")
+    return true
+end
+
+function remove_tag_input(symbol, tag_index, vb)
+    local current_count = get_tag_count(symbol)
+    if current_count <= 1 then
+        renoise.app():show_warning("Minimum 1 tag input required")
+        return false
+    end
+    
+    -- Remove from registry
+    if global_symbol_registry[symbol] and global_symbol_registry[symbol].tags then
+        table.remove(global_symbol_registry[symbol].tags, tag_index)
+    end
+    
+    -- Remove from editing states
+    if tag_editing_states[symbol] and tag_editing_states[symbol][tag_index] then
+        table.remove(tag_editing_states[symbol], tag_index)
+    end
+    
+    -- Persist changes and refresh dialog
+    save_global_symbol_registry()
+    
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    return true
+end
+
+function update_tag_ui_state(symbol, tag_index, is_saved, tag_text, vb)
+    local tag_field = vb.views["tag_field_" .. symbol .. "_" .. tag_index]
+    local tag_text_display = vb.views["tag_text_" .. symbol .. "_" .. tag_index]
+    local tag_save_button = vb.views["tag_save_" .. symbol .. "_" .. tag_index]
+    
+    if not tag_save_button then
+        print("DEBUG: Could not find tag UI elements for symbol " .. symbol .. " tag " .. tag_index)
+        return
+    end
+    
+    if is_saved and tag_text and tag_text ~= "" then
+        -- Saved state: hide textfield, show text display, update button
+        if tag_field then
+            tag_field.visible = false
+        end
+        if tag_text_display then
+            tag_text_display.visible = true
+            tag_text_display.text = tag_text
+        end
+        tag_save_button.text = "[■]"
+        tag_save_button.tooltip = "Click to edit tag"
+    else
+        -- Editing state: show textfield, hide text display, update button
+        if tag_field then
+            tag_field.visible = true
+            tag_field.text = tag_text or ""
+        end
+        if tag_text_display then
+            tag_text_display.visible = false
+        end
+        tag_save_button.text = "[□]"
+        tag_save_button.tooltip = "Click to save tag"
+    end
+end
+
+function update_tag_button_states(symbol, vb)
+    local current_count = get_tag_count(symbol)
+    
+    local add_button = vb.views["tag_add_" .. symbol]
+    local remove_button = vb.views["tag_remove_" .. symbol]
+    
+    if add_button then
+        add_button.active = (current_count < 5)
+    end
+    
+    if remove_button then
+        remove_button.active = (current_count > 1)
+    end
+end
+
+function preserve_unsaved_tag_inputs(symbol, vb)
+    if symbol then
+        -- Preserve specific symbol
+        preserve_single_symbol_tag_inputs(symbol, vb)
+    else
+        -- Preserve all symbols
+        for sym, _ in pairs(global_symbol_registry) do
+            preserve_single_symbol_tag_inputs(sym, vb)
+        end
+    end
+end
+
+function preserve_single_symbol_tag_inputs(symbol, vb)
+    local current_tags = get_symbol_tags(symbol)
+    local tag_count = get_tag_count(symbol)
+    
+    if not global_symbol_registry[symbol].tags then
+        global_symbol_registry[symbol].tags = {}
+    end
+    
+    for i = 1, tag_count do
+        local tag_field = vb.views["tag_field_" .. symbol .. "_" .. i]
+        if tag_field and tag_field.visible then
+            local current_text = tag_field.text or ""
+            if current_text ~= "" then
+                while #global_symbol_registry[symbol].tags < i do
+                    table.insert(global_symbol_registry[symbol].tags, "")
+                end
+                global_symbol_registry[symbol].tags[i] = current_text
+                if not tag_editing_states[symbol] then
+                    tag_editing_states[symbol] = {}
+                end
+                tag_editing_states[symbol][i] = false
+            end
+        end
+    end
+end
+
+function clear_all_symbols()
+    global_symbol_registry = {}
+    tag_editing_states = {}
+    color_editing_states = {}
+    
+    save_global_symbol_registry()
+    
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    renoise.app():show_status("All symbols cleared")
+end
+
+function create_tag_input_row(symbol, tag_index, tag_text, is_saved, vb)
+    return vb:row {
+        id = "tag_row_" .. symbol .. "_" .. tag_index,
+        spacing = 2,
+        width = 102,  -- Fixed width to prevent expansion (80 + 20 + 2 spacing)
+        
+        -- Container for the input/display area to maintain consistent width
+        vb:column {
+            width = 80,
+            height = 20,
+            
+            -- Textfield (for editing)
+            vb:textfield {
+                id = "tag_field_" .. symbol .. "_" .. tag_index,
+                width = 80,
+                height = 20,
+                text = tag_text or "",
+                visible = not (is_saved and tag_text and tag_text ~= "")
+            },
+            
+            -- Text display (for saved state) - wrapped in aligner for consistent positioning
+            vb:horizontal_aligner {
+                mode = "left",
+                width = 80,
+                height = 20,
+                vb:text {
+                    id = "tag_text_" .. symbol .. "_" .. tag_index,
+                    text = tag_text or "",
+                    style = "strong",
+                    tooltip = "Tag: " .. (tag_text or ""),
+                    visible = (is_saved and tag_text and tag_text ~= "")
+                }
+            }
+        },
+        
+        -- Save/Edit button
+        vb:button {
+            id = "tag_save_" .. symbol .. "_" .. tag_index,
+            text = (is_saved and tag_text and tag_text ~= "") and "[■]" or "[□]",
+            width = 20,
+            height = 20,
+            tooltip = (is_saved and tag_text and tag_text ~= "") and "Click to edit tag" or "Click to save tag",
+            notifier = function()
+                local current_is_saved = tag_editing_states[symbol] and tag_editing_states[symbol][tag_index] or false
+                local current_tag = ""
+                
+                if global_symbol_registry[symbol] and global_symbol_registry[symbol].tags then
+                    current_tag = global_symbol_registry[symbol].tags[tag_index] or ""
+                end
+                
+                if current_is_saved and current_tag and current_tag ~= "" then
+                    -- Currently saved, so unlock for editing
+                    unlock_symbol_tag(symbol, tag_index, vb)
+                else
+                    -- Currently editing, so save
+                    local tag_field = vb.views["tag_field_" .. symbol .. "_" .. tag_index]
+                    if tag_field then
+                        save_symbol_tag(symbol, tag_index, tag_field.text, vb)
+                    end
+                end
+            end
+        }
+    }
+end
+
+function create_tag_buttons_row(symbol, vb)
+    return vb:row {
+        id = "tag_buttons_row_" .. symbol,
+        spacing = 5,
+        vb:button {
+            id = "tag_add_" .. symbol,
+            text = "+",
+            width = 20,
+            height = 20,
+            tooltip = "Add tag",
+            notifier = function()
+                add_tag_input(symbol, vb)
+            end
+        },
+        vb:button {
+            id = "tag_remove_" .. symbol,
+            text = "-",
+            width = 20,
+            height = 20,
+            tooltip = "Remove last tag",
+            notifier = function()
+                local current_count = get_tag_count(symbol)
+                if current_count > 1 then
+                    remove_tag_input(symbol, current_count, vb)
+                end
+            end
+        }
+    }
+end
+
+function rebuild_tag_container(symbol, vb)
+    -- Instead of complex rebuilding, just refresh the entire dialog
+    save_global_symbol_registry()
+    
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    -- Get current tags
+    local tags = get_symbol_tags(symbol)
+    local tag_count = math.max(1, #tags)
+    
+    -- Rebuild tag input rows
+    for i = 1, tag_count do
+        local tag_text = tags[i] or ""
+        local is_saved = tag_editing_states[symbol] and tag_editing_states[symbol][i] or false
+        
+        local tag_row = create_tag_input_row(symbol, i, tag_text, is_saved, vb)
+        tag_container:add_child(tag_row)
+    end
+    
+    -- Add +/- buttons row
+    local buttons_row = create_tag_buttons_row(symbol, vb)
+    tag_container:add_child(buttons_row)
+    
+    -- Update button states
+    update_tag_button_states(symbol, vb)
+end
+
+-- Color system functions (mirror category system)
+function get_symbol_color(symbol)
+    local registry_entry = global_symbol_registry[symbol]
+    return registry_entry and registry_entry.color or ""
+end
+
+function save_symbol_color(symbol, color_name, vb)
+    if not global_symbol_registry[symbol] then
+        print("DEBUG: Cannot save color for symbol " .. symbol .. " - symbol not in registry")
+        return false
+    end
+    
+    -- Save color to registry
+    global_symbol_registry[symbol].color = color_name or ""
+    
+    -- Update editing state - true means saved/locked, false means editing
+    local has_color = color_name and color_name ~= ""
+    color_editing_states[symbol] = has_color
+    
+    -- Update UI to show saved state (locked)
+    if vb then
+        update_color_ui_state(symbol, has_color, color_name, vb)
+    end
+    
+    -- Apply color to symbol button
+    if vb then
+        apply_symbol_button_color(symbol, color_name, vb)
+    end
+    
+    -- Persist to preferences
+    save_global_symbol_registry()
+    
+    print("DEBUG: Saved color '" .. (color_name or "") .. "' for symbol " .. symbol)
+    
+    local status_msg = has_color and 
+        ("Color saved for symbol " .. symbol .. ": " .. color_name) or
+        ("Color cleared for symbol " .. symbol)
+    renoise.app():show_status(status_msg)
+    
+    -- Preserve unsaved tag inputs before refresh
+    preserve_unsaved_tag_inputs(symbol, vb)
+    
+    -- Refresh the dialog to show color changes
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    return true
+end
+
+function unlock_symbol_color(symbol, vb)
+    -- Set editing state to false (unlocked for editing)
+    color_editing_states[symbol] = false
+    
+    -- Get current color
+    local current_color = get_symbol_color(symbol)
+    
+    -- Update UI to show editing state (unlocked)
+    update_color_ui_state(symbol, false, current_color, vb)
+    
+    print("DEBUG: Unlocked color editing for symbol " .. symbol)
+    renoise.app():show_status("Color editing unlocked for symbol " .. symbol)
+end
+
+function update_color_ui_state(symbol, is_saved, color_name, vb)
+    local color_popup = vb.views["color_popup_" .. symbol]
+    local color_text_display = vb.views["color_text_" .. symbol]
+    local color_save_button = vb.views["color_save_" .. symbol]
+    
+    if not color_save_button then
+        print("DEBUG: Could not find color UI elements for symbol " .. symbol)
+        return
+    end
+    
+    if is_saved and color_name and color_name ~= "" then
+        -- Saved state: hide popup, show text display, update button
+        if color_popup then
+            color_popup.visible = false
+        end
+        if color_text_display then
+            color_text_display.visible = true
+            color_text_display.text = color_name
+            -- Note: Text views don't support color property in Renoise
+            -- Color indication is handled by the symbol buttons themselves
+        end
+        color_save_button.text = "[■]"
+        color_save_button.tooltip = "Click to edit color"
+    else
+        -- Editing state: show popup, hide text display, update button
+        if color_popup then
+            color_popup.visible = true
+            -- Set popup value to current color
+            local color_index = table.find(color_dropdown_items, color_name or "")
+            if color_index then
+                color_popup.value = color_index
+            else
+                color_popup.value = 1 -- Default to no color
+            end
+        end
+        if color_text_display then
+            color_text_display.visible = false
+        end
+        color_save_button.text = "[□]"
+        color_save_button.tooltip = "Click to save color"
+    end
+end
+
+function apply_symbol_button_color(symbol, color_name, vb)
+    local symbol_button = symbol_button_refs[symbol]
+    if not symbol_button then
+        print("DEBUG: No button reference found for symbol " .. symbol)
+        print("DEBUG: Available button refs:", table.concat((function()
+            local keys = {}
+            for k, _ in pairs(symbol_button_refs) do
+                table.insert(keys, k)
+            end
+            return keys
+        end)(), ", "))
+        return
+    end
+    
+    print("DEBUG: Found button reference for symbol " .. symbol)
+    
+    if color_name and color_name ~= "" and color_definitions[color_name] then
+        local color_def = color_definitions[color_name]
+        if color_def.darker then
+            -- Apply darker color as background
+            symbol_button.color = color_def.darker
+            print("DEBUG: Applied color " .. color_name .. " RGB(" .. color_def.darker[1] .. "," .. color_def.darker[2] .. "," .. color_def.darker[3] .. ") to symbol " .. symbol)
+        end
+    else
+        -- Remove color (return to default theme colors)
+        symbol_button.color = {0, 0, 0}
+        print("DEBUG: Removed color from symbol " .. symbol)
+    end
+end
+
+function initialize_color_editing_states()
+    -- Initialize editing states based on existing colors
+    -- true = saved/locked, false = editing/unlocked
+    color_editing_states = {}
+    for symbol, symbol_data in pairs(global_symbol_registry) do
+        local has_color = symbol_data.color and symbol_data.color ~= ""
+        color_editing_states[symbol] = has_color  -- saved colors start in locked state
+    end
+    print("DEBUG: Initialized color editing states for " .. table.count(color_editing_states) .. " symbols")
+end
+
+function update_category_ui_state(symbol, is_saved, category_text, vb)
+    -- Instead of trying to modify existing views, we'll update the visibility and content
+    -- of existing views that we know exist
+    
+    local category_field = vb.views["category_field_" .. symbol]
+    local category_text_display = vb.views["category_text_" .. symbol]
+    local category_save_button = vb.views["category_save_" .. symbol]
+    
+    if not category_save_button then
+        print("DEBUG: Could not find category UI elements for symbol " .. symbol)
+        return
+    end
+    
+    if is_saved and category_text and category_text ~= "" then
+        -- Saved state: hide textfield, show text display, update button
+        if category_field then
+            category_field.visible = false
+        end
+        if category_text_display then
+            category_text_display.visible = true
+            category_text_display.text = category_text
+        end
+        category_save_button.text = "[■]"
+        category_save_button.tooltip = "Click to edit category"
+    else
+        -- Editing state: show textfield, hide text display, update button
+        if category_field then
+            category_field.visible = true
+            category_field.text = category_text or ""
+        end
+        if category_text_display then
+            category_text_display.visible = false
+        end
+        category_save_button.text = "[□]"
+        category_save_button.tooltip = "Click to save category"
+    end
+end
+
+function initialize_tag_editing_states()
+    -- Initialize editing states based on existing tags
+    -- true = saved/locked, false = editing/unlocked
+    tag_editing_states = {}
+    for symbol, symbol_data in pairs(global_symbol_registry) do
+        -- Handle backward compatibility: convert old category to tags
+        if symbol_data.category and not symbol_data.tags then
+            symbol_data.tags = symbol_data.category ~= "" and {symbol_data.category} or {}
+            symbol_data.category = nil  -- Remove old category field
+        end
+        
+        local tags = symbol_data.tags or {}
+        tag_editing_states[symbol] = {}
+        
+        -- Initialize editing state for each tag
+        for i, tag in ipairs(tags) do
+            local has_tag = tag and tag ~= ""
+            tag_editing_states[symbol][i] = has_tag  -- saved tags start in locked state
+        end
+        
+        -- Ensure at least one tag input state exists
+        if #tags == 0 then
+            tag_editing_states[symbol][1] = false  -- empty tag in editing state
+        end
+    end
+    print("DEBUG: Initialized tag editing states for " .. table.count(tag_editing_states) .. " symbols")
+    
+    -- Also initialize color editing states
+    initialize_color_editing_states()
 end
 
 -- Capture current selection as symbol
 function capture_selection_as_symbol()
     print("DEBUG: Capturing selection as symbol")
+    
+    -- Preserve all unsaved tag inputs before refresh
+    if dialog and dialog.visible and current_dialog_vb then
+        preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+    end
     
     local success, new_symbol = selection.capture_selection_as_symbol()
     if success then
@@ -205,6 +948,22 @@ function load_global_symbol_registry()
         local success, loaded_registry = pcall(loadstring("return " .. preferences.global_symbol_registry_data.value))
         if success and loaded_registry then
             global_symbol_registry = loaded_registry
+            
+            -- Ensure all symbols have tags and color fields (backward compatibility)
+            for symbol, symbol_data in pairs(global_symbol_registry) do
+                -- Convert old category field to tags array
+                if symbol_data.category ~= nil and symbol_data.tags == nil then
+                    symbol_data.tags = symbol_data.category ~= "" and {symbol_data.category} or {}
+                    symbol_data.category = nil  -- Remove old category field
+                end
+                if symbol_data.tags == nil then
+                    symbol_data.tags = {}
+                end
+                if symbol_data.color == nil then
+                    symbol_data.color = ""
+                end
+            end
+            
             print("DEBUG: Loaded global symbol registry with", table.count(global_symbol_registry), "symbols")
         else
             print("DEBUG: Failed to load global symbol registry, starting with empty registry")
@@ -214,6 +973,9 @@ function load_global_symbol_registry()
         print("DEBUG: No saved global symbol registry found, starting with empty registry")
         global_symbol_registry = {}
     end
+    
+    -- Initialize tag editing states
+    initialize_tag_editing_states()
 end
 
 -- Save global symbol registry to preferences
@@ -239,8 +1001,8 @@ function export_global_alphabet_csv()
         return
     end
     
-    -- Write CSV header - expanded to include symbol type and range capture metadata
-    file:write("Symbol,SymbolType,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
+    -- Write CSV header - expanded to include symbol type, range capture metadata, tags, and color
+    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
     
     -- Write data for each symbol
     for symbol, symbol_data in pairs(global_symbol_registry) do
@@ -248,6 +1010,25 @@ function export_global_alphabet_csv()
         local break_set = symbol_data.break_set
         local saved_labels = symbol_data.saved_labels or {}
         local symbol_type = symbol_data.symbol_type or "breakpoint_created"
+        local symbol_color = symbol_data.color or ""
+        local symbol_tags = symbol_data.tags or {}
+        
+        -- Convert tags array to comma-separated string
+        local tags_string = ""
+        if #symbol_tags > 0 then
+            tags_string = table.concat(symbol_tags, ", ")
+        end
+        
+        print("DEBUG: Exporting symbol " .. symbol .. " (type: " .. symbol_type .. ") with " .. (function()
+            local count = 0
+            for _ in pairs(saved_labels) do count = count + 1 end
+            return count
+        end)() .. " labels, tags: " .. tags_string .. ", and color: " .. symbol_color)
+        
+        -- Debug: Show available labels for this symbol
+        for hex_key, label_data in pairs(saved_labels) do
+            print("DEBUG:   " .. symbol .. " has label " .. hex_key .. " -> " .. (label_data.label or ""))
+        end
         
         -- Extract source metadata for range-captured symbols
         local source_pattern = ""
@@ -267,11 +1048,30 @@ function export_global_alphabet_csv()
         if break_set and break_set.timing then
             for _, timing in ipairs(break_set.timing) do
                 local slice_index = timing.instrument_value or 0
-                local hex_key = string.format("%02X", slice_index + 1)
-                local label_data = saved_labels[hex_key] or {}
-                local slice_label = label_data.label or ""
-                local is_breakpoint = label_data.breakpoint or false
+                local slice_label = ""
+                local is_breakpoint = false
                 local note_value = timing.note_value or ""
+                
+                -- For range symbols, calculate the hex_key using the same logic as label mapping
+                local hex_key
+                if symbol_type == "range_captured" then
+                    -- Use the same note-to-slice mapping as in selection.lua
+                    local calculated_slice_index = 0
+                    if note_value >= 37 then
+                        calculated_slice_index = note_value - 36
+                    end
+                    hex_key = string.format("%02X", calculated_slice_index + 1)
+                    print("DEBUG: Range symbol " .. symbol .. " note " .. note_value .. " -> slice " .. calculated_slice_index .. " -> hex_key " .. hex_key)
+                else
+                    -- Breakpoint symbols use the instrument_value
+                    hex_key = string.format("%02X", slice_index + 1)
+                end
+                
+                local label_data = saved_labels[hex_key] or {}
+                slice_label = label_data.label or ""
+                is_breakpoint = label_data.breakpoint or false
+                
+                print("DEBUG: Symbol " .. symbol .. " using hex_key " .. hex_key .. " -> label '" .. slice_label .. "'")
                 
                 -- Escape CSV fields - ensure all values are strings and handle nil
                 local function escape_csv_field(field)
@@ -294,6 +1094,8 @@ function export_global_alphabet_csv()
                 local values = {
                     symbol or "",
                     symbol_type or "",
+                    tags_string or "",  -- Use comma-separated tags string
+                    symbol_color or "",
                     instrument_index or "",
                     actual_instrument_value or "",
                     slice_label or "",
@@ -353,6 +1155,8 @@ function export_global_alphabet_json()
         local symbol_entry = {
             symbol_type = symbol_type,
             instrument_index = instrument_index,
+            tags = symbol_data.tags or {},  -- Store as array
+            color = symbol_data.color or "",
             notes = {},
             timing_data = {}
         }
@@ -366,8 +1170,8 @@ function export_global_alphabet_json()
             }
         end
         
-        -- Add saved labels for breakpoint symbols
-        if symbol_type == "breakpoint_created" and saved_labels then
+        -- Add saved labels for both breakpoint and range symbols (range symbols can now have labels too)
+        if saved_labels and next(saved_labels) ~= nil then
             symbol_entry.saved_labels = saved_labels
         end
         
@@ -563,8 +1367,8 @@ function import_global_alphabet_csv()
     
     -- Updated expected columns to include new fields
     local expected_columns = {
-        "symbol", "symboltype", "instrumentindex", "sliceindex", "slicelabel", 
-        "isbreakpoint", "timingline", "timingdelay", "originaldistance", "notevalue",
+        "symbol", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
+        "timingline", "timingdelay", "originaldistance", "notevalue",
         "sourcepattern", "sourcetrack", "capturestartline", "captureendline"
     }
     
@@ -604,7 +1408,21 @@ function import_global_alphabet_csv()
                 -- Extract core fields
                 local symbol = unescape_csv_field(fields[column_positions.symbol] or ""):upper()
                 local symbol_type = unescape_csv_field(fields[column_positions.symboltype] or "breakpoint_created")
+                local tags_string = unescape_csv_field(fields[column_positions.tags] or "")
+                local color = unescape_csv_field(fields[column_positions.color] or "")
                 local instrument_index = tonumber(unescape_csv_field(fields[column_positions.instrumentindex] or "1"))
+                
+                -- Parse tags string into array
+                local tags = {}
+                if tags_string and tags_string ~= "" then
+                    -- Split by comma and trim whitespace
+                    for tag in tags_string:gmatch("([^,]+)") do
+                        local trimmed_tag = tag:match("^%s*(.-)%s*$")  -- Trim whitespace
+                        if trimmed_tag and trimmed_tag ~= "" then
+                            table.insert(tags, trimmed_tag)
+                        end
+                    end
+                end
                 local slice_index = tonumber(unescape_csv_field(fields[column_positions.sliceindex] or "0"))
                 local slice_label = unescape_csv_field(fields[column_positions.slicelabel] or "")
                 local is_breakpoint_str = unescape_csv_field(fields[column_positions.isbreakpoint] or "false"):lower()
@@ -641,6 +1459,8 @@ function import_global_alphabet_csv()
                 
                 local is_breakpoint = (is_breakpoint_str == "true")
                 
+                print("DEBUG: Importing " .. symbol_type .. " symbol " .. symbol .. " with slice_label '" .. slice_label .. "'")
+                
                 -- Validate essential data
                 if symbol and symbol ~= "" and instrument_index and slice_index and timing_line and timing_delay and original_distance then
                     -- Initialize symbol data if not exists
@@ -648,6 +1468,8 @@ function import_global_alphabet_csv()
                         imported_symbols[symbol] = {
                             symbol_type = symbol_type,
                             instrument_index = instrument_index,
+                            tags = tags,  -- Store tags array
+                            color = color,
                             timing_data = {},
                             saved_labels = {},
                             source_metadata = nil
@@ -695,14 +1517,30 @@ function import_global_alphabet_csv()
                     
                     table.insert(imported_symbols[symbol].timing_data, timing_entry)
                     
-                    -- Add label data (for breakpoint symbols or compatibility)
-                    if symbol_type == "breakpoint_created" or slice_label ~= "" or is_breakpoint then
-                        local hex_key = string.format("%02X", slice_index + 1)
+                    -- Add label data - FIXED: Use correct hex_key calculation for range symbols
+                    if slice_label ~= "" or is_breakpoint then
+                        local hex_key
+                        
+                        if symbol_type == "range_captured" and note_value then
+                            -- For range symbols, calculate hex_key using the same note-to-slice mapping
+                            local calculated_slice_index = 0
+                            if note_value >= 37 then
+                                calculated_slice_index = note_value - 36
+                            end
+                            hex_key = string.format("%02X", calculated_slice_index + 1)
+                            print("DEBUG: Range symbol " .. symbol .. " note " .. note_value .. " -> slice " .. calculated_slice_index .. " -> hex_key " .. hex_key)
+                        else
+                            -- For breakpoint symbols, use slice_index directly
+                            hex_key = string.format("%02X", slice_index + 1)
+                        end
+                        
                         imported_symbols[symbol].saved_labels[hex_key] = {
                             label = slice_label,
                             breakpoint = is_breakpoint,
                             instrument_index = instrument_index
                         }
+                        
+                        print("DEBUG: Added label '" .. slice_label .. "' to symbol " .. symbol .. " hex_key " .. hex_key)
                     end
                 else
                     print("WARNING: Line " .. line_number .. " has invalid core data, skipping")
@@ -761,7 +1599,9 @@ function import_global_alphabet_csv()
         local registry_entry = {
             instrument_index = symbol_data.instrument_index,
             break_set = break_set,
-            saved_labels = symbol_data.saved_labels
+            saved_labels = symbol_data.saved_labels,
+            tags = symbol_data.tags or (symbol_data.category and {symbol_data.category} or {}), -- Convert category to tags array
+            color = symbol_data.color or ""
         }
         
         -- Add symbol type and source metadata for range-captured symbols
@@ -774,6 +1614,10 @@ function import_global_alphabet_csv()
         
         -- Update global registry
         global_symbol_registry[symbol] = registry_entry
+        
+        local label_count = 0
+        for _ in pairs(symbol_data.saved_labels) do label_count = label_count + 1 end
+        print("DEBUG: Imported symbol " .. symbol .. " with " .. label_count .. " labels")
     end
     
     -- Save to preferences
@@ -786,6 +1630,10 @@ function import_global_alphabet_csv()
     
     -- Refresh main dialog if open
     if dialog and dialog.visible then
+        -- Preserve all unsaved tag inputs before refresh
+        if current_dialog_vb then
+            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+        end
         dialog:close()
         show_main_dialog()
     end
@@ -833,6 +1681,12 @@ function import_global_alphabet_json()
             
             local instrument_index = symbol_data.instrument_index
             local symbol_type = symbol_data.symbol_type or "breakpoint_created"
+            local tags = symbol_data.tags or {}
+            -- Handle backward compatibility: convert old category to tags
+            if symbol_data.category and #tags == 0 then
+                tags = symbol_data.category ~= "" and {symbol_data.category} or {}
+            end
+            local color = symbol_data.color or ""
             local timing_data = {}
             local saved_labels = {}
             local notes = {}
@@ -982,7 +1836,9 @@ function import_global_alphabet_json()
                 local registry_entry = {
                     instrument_index = instrument_index,
                     break_set = break_set,
-                    saved_labels = saved_labels
+                    saved_labels = saved_labels,
+                    tags = tags,  -- Store tags array
+                    color = color
                 }
                 
                 -- Add symbol type and source metadata for range-captured symbols
@@ -1013,6 +1869,10 @@ function import_global_alphabet_json()
     
     -- Refresh main dialog if open
     if dialog and dialog.visible then
+        -- Preserve all unsaved tag inputs before refresh
+        if current_dialog_vb then
+            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+        end
         dialog:close()
         show_main_dialog()
     end
@@ -1082,6 +1942,312 @@ local function safe_song_access(callback)
     end
 end
 
+-- Create compact overflow behavior section
+local function create_compact_overflow_section(vb)
+    return vb:column {
+        style = "group",
+        margin = 5,
+        width = 60,
+        vb:text {
+            text = "OF",
+            font = "bold",
+            style = "strong"
+        },
+        vb:space { height = 3 },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overflow_extend",
+                value = (current_overflow_behavior == overflow_behavior.EXTEND),
+                notifier = function(value)
+                    if value then
+                        current_overflow_behavior = overflow_behavior.EXTEND
+                        -- Uncheck other options
+                        vb.views.compact_overflow_next_pattern.value = false
+                        vb.views.compact_overflow_truncate.value = false
+                        vb.views.compact_overflow_loop.value = false
+                    end
+                end
+            },
+            vb:text { text = "E", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overflow_next_pattern",
+                value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN),
+                notifier = function(value)
+                    if value then
+                        current_overflow_behavior = overflow_behavior.NEXT_PATTERN
+                        -- Uncheck other options
+                        vb.views.compact_overflow_extend.value = false
+                        vb.views.compact_overflow_truncate.value = false
+                        vb.views.compact_overflow_loop.value = false
+                    end
+                end
+            },
+            vb:text { text = "N", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overflow_truncate",
+                value = (current_overflow_behavior == overflow_behavior.TRUNCATE),
+                notifier = function(value)
+                    if value then
+                        current_overflow_behavior = overflow_behavior.TRUNCATE
+                        -- Uncheck other options
+                        vb.views.compact_overflow_extend.value = false
+                        vb.views.compact_overflow_next_pattern.value = false
+                        vb.views.compact_overflow_loop.value = false
+                    end
+                end
+            },
+            vb:text { text = "T", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overflow_loop",
+                value = (current_overflow_behavior == overflow_behavior.LOOP),
+                notifier = function(value)
+                    if value then
+                        current_overflow_behavior = overflow_behavior.LOOP
+                        -- Uncheck other options
+                        vb.views.compact_overflow_extend.value = false
+                        vb.views.compact_overflow_next_pattern.value = false
+                        vb.views.compact_overflow_truncate.value = false
+                    end
+                end
+            },
+            vb:text { text = "L", width = 15 }
+        }
+    }
+end
+
+-- Create compact overwrite behavior section
+local function create_compact_overwrite_section(vb)
+    return vb:column {
+        style = "group",
+        margin = 5,
+        width = 60,
+        vb:text {
+            text = "OB",
+            font = "bold",
+            style = "strong"
+        },
+        vb:space { height = 3 },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_sum",
+                value = (current_overwrite_behavior == overwrite_behavior.SUM),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.SUM
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_replace.value = false
+                        vb.views.compact_overwrite_substitute.value = false
+                        vb.views.compact_overwrite_retain.value = false
+                        vb.views.compact_overwrite_exclude.value = false
+                        vb.views.compact_overwrite_intersect.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.SUM then
+                        vb.views.compact_overwrite_sum.value = true
+                    end
+                end
+            },
+            vb:text { text = "+", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_replace",
+                value = (current_overwrite_behavior == overwrite_behavior.REPLACE),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.REPLACE
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_sum.value = false
+                        vb.views.compact_overwrite_substitute.value = false
+                        vb.views.compact_overwrite_retain.value = false
+                        vb.views.compact_overwrite_exclude.value = false
+                        vb.views.compact_overwrite_intersect.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.REPLACE then
+                        vb.views.compact_overwrite_replace.value = true
+                    end
+                end
+            },
+            vb:text { text = "R", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_substitute",
+                value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.SUBSTITUTE
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_sum.value = false
+                        vb.views.compact_overwrite_replace.value = false
+                        vb.views.compact_overwrite_retain.value = false
+                        vb.views.compact_overwrite_exclude.value = false
+                        vb.views.compact_overwrite_intersect.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.SUBSTITUTE then
+                        vb.views.compact_overwrite_substitute.value = true
+                    end
+                end
+            },
+            vb:text { text = "S", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_retain",
+                value = (current_overwrite_behavior == overwrite_behavior.RETAIN),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.RETAIN
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_sum.value = false
+                        vb.views.compact_overwrite_replace.value = false
+                        vb.views.compact_overwrite_substitute.value = false
+                        vb.views.compact_overwrite_exclude.value = false
+                        vb.views.compact_overwrite_intersect.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.RETAIN then
+                        vb.views.compact_overwrite_retain.value = true
+                    end
+                end
+            },
+            vb:text { text = "T", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_exclude",
+                value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.EXCLUDE
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_sum.value = false
+                        vb.views.compact_overwrite_replace.value = false
+                        vb.views.compact_overwrite_substitute.value = false
+                        vb.views.compact_overwrite_retain.value = false
+                        vb.views.compact_overwrite_intersect.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.EXCLUDE then
+                        vb.views.compact_overwrite_exclude.value = true
+                    end
+                end
+            },
+            vb:text { text = "E", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overwrite_intersect",
+                value = (current_overwrite_behavior == overwrite_behavior.INTERSECT),
+                notifier = function(value)
+                    if value then
+                        current_overwrite_behavior = overwrite_behavior.INTERSECT
+                        -- Uncheck other options
+                        vb.views.compact_overwrite_sum.value = false
+                        vb.views.compact_overwrite_replace.value = false
+                        vb.views.compact_overwrite_substitute.value = false
+                        vb.views.compact_overwrite_retain.value = false
+                        vb.views.compact_overwrite_exclude.value = false
+                    elseif current_overwrite_behavior == overwrite_behavior.INTERSECT then
+                        vb.views.compact_overwrite_intersect.value = true
+                    end
+                end
+            },
+            vb:text { text = "I", width = 15 }
+        }
+    }
+end
+
+-- Create compact instrument source behavior section
+local function create_compact_instrument_source_section(vb)
+    return vb:column {
+        style = "group",
+        margin = 5,
+        width = 60,
+        vb:text {
+            text = "IS",
+            font = "bold",
+            style = "strong"
+        },
+        vb:space { height = 3 },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_instrument_source_embedded",
+                value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED),
+                notifier = function(value)
+                    if value then
+                        current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
+                        -- Uncheck other option
+                        vb.views.compact_instrument_source_current.value = false
+                    elseif current_instrument_source_behavior == instrument_source_behavior.EMBEDDED then
+                        vb.views.compact_instrument_source_embedded.value = true
+                    end
+                end
+            },
+            vb:text { text = "E", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_instrument_source_current",
+                value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED),
+                notifier = function(value)
+                    if value then
+                        current_instrument_source_behavior = instrument_source_behavior.CURRENT_SELECTED
+                        -- Uncheck other option
+                        vb.views.compact_instrument_source_embedded.value = false
+                    elseif current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED then
+                        vb.views.compact_instrument_source_current.value = true
+                    end
+                end
+            },
+            vb:text { text = "C", width = 15 }
+        }
+    }
+end
+
+-- Toggle UI collapse state
+local function toggle_ui_collapse(vb)
+    ui_collapsed = not ui_collapsed
+    
+    -- Update collapse button text to use +/- like the right column
+    if vb.views.collapse_button then
+        vb.views.collapse_button.text = ui_collapsed and "+" or "-"
+    end
+    
+    -- Toggle visibility of collapsible elements
+    if vb.views.header_controls then
+        vb.views.header_controls.visible = not ui_collapsed
+    end
+    if vb.views.full_behaviors_section then
+        vb.views.full_behaviors_section.visible = not ui_collapsed
+    end
+    if vb.views.break_string_section then
+        vb.views.break_string_section.visible = not ui_collapsed
+    end
+    if vb.views.composite_symbols_section then
+        vb.views.composite_symbols_section.visible = not ui_collapsed
+    end
+    if vb.views.instrument_source_section then
+        vb.views.instrument_source_section.visible = not ui_collapsed
+    end
+    if vb.views.compact_behaviors_section then
+        vb.views.compact_behaviors_section.visible = ui_collapsed
+    end
+    if vb.views.action_buttons then
+        vb.views.action_buttons.visible = not ui_collapsed
+    end
+end
+
 -- Navigate to previous page
 local function prev_symbol_page(dialog_vb)
     local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -1112,6 +2278,138 @@ local function next_symbol_page(dialog_vb)
             show_main_dialog()
         end
     end
+end
+
+-- Get only symbols that are mapped in the global registry
+local function get_mapped_symbols()
+    local mapped = {}
+    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+    
+    for _, symbol in ipairs(all_symbols) do
+        if global_symbol_registry[symbol] then
+            table.insert(mapped, symbol)
+        end
+    end
+    
+    return mapped
+end
+
+-- Toggle right column collapse state
+local function toggle_right_column_collapse(vb)
+    right_column_collapsed = not right_column_collapsed
+    
+    -- Update collapse button text
+    if vb.views.right_collapse_button then
+        vb.views.right_collapse_button.text = right_column_collapsed and "+" or "-"
+    end
+    
+    -- Toggle visibility of collapsible elements
+    if vb.views.right_full_content then
+        vb.views.right_full_content.visible = not right_column_collapsed
+    end
+    if vb.views.right_compact_content then
+        vb.views.right_compact_content.visible = right_column_collapsed
+    end
+    
+    -- Update the width of the right column container
+    if vb.views.right_column_container then
+        if right_column_collapsed then
+            -- Calculate compact width
+            local mapped_symbols = get_mapped_symbols()
+            local button_width = 30
+            local button_spacing = 3
+            local buttons_per_row = math.min(4, #mapped_symbols > 0 and #mapped_symbols or 1)
+            local calculated_width = (button_width * buttons_per_row) + (button_spacing * (buttons_per_row - 1)) + 40 -- +40 for margin/padding
+            local compact_width = math.max(calculated_width, 140) -- Minimum width for collapse button and text
+            vb.views.right_column_container.width = compact_width
+        else
+            -- Restore full width
+            vb.views.right_column_container.width = 500
+        end
+    end
+end
+
+-- Create compact right column content (only mapped symbols)
+local function create_compact_right_column(vb)
+    local mapped_symbols = get_mapped_symbols()
+    
+    local compact_content = vb:column {
+        spacing = 5,
+        
+        -- Compact symbol buttons (only mapped ones)
+        vb:column {
+            spacing = 3,
+            vb:text {
+                text = "Symbols (" .. #mapped_symbols .. ")",
+                font = "bold",
+                style = "strong",
+                align = "center"
+            },
+            vb:space { height = 5 }
+        }
+    }
+    
+    -- Add symbol buttons in compact rows (4 per row max)
+    if #mapped_symbols > 0 then
+        local buttons_per_row = 4
+        local current_row = nil
+        local button_width = 30
+        local button_spacing = 3
+        
+        for i, symbol in ipairs(mapped_symbols) do
+            -- Start new row every 4 buttons
+            if (i - 1) % buttons_per_row == 0 then
+                current_row = vb:row {
+                    spacing = button_spacing
+                }
+                compact_content:add_child(current_row)
+            end
+            
+            local symbol_button = vb:button {
+                text = symbol,
+                width = button_width,
+                height = 25,
+                notifier = function()
+                    editor.place_symbol(symbol)
+                end
+            }
+            
+            -- Store reference for visual feedback
+            symbol_button_refs[symbol] = symbol_button
+            
+            -- Apply color if symbol has one
+            local symbol_color = get_symbol_color(symbol)
+            if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
+                symbol_button.color = color_definitions[symbol_color].darker
+            end
+            
+            current_row:add_child(symbol_button)
+        end
+    else
+        compact_content:add_child(
+            vb:text {
+                text = "No symbols",
+                style = "disabled",
+                align = "center"
+            }
+        )
+    end
+    
+    -- Add compact input lock indicator
+    compact_content:add_child(vb:space { height = 10 })
+    compact_content:add_child(
+        vb:horizontal_aligner {
+            mode = "center",
+            vb:text {
+                id = "compact_input_lock_indicator",
+                text = input_lock_active and "[-]" or "[O]",
+                font = "bold",
+                style = input_lock_active and "strong" or "normal"
+            }
+        }
+    )
+    
+    return compact_content
 end
 
 -- Helper function for table operations
@@ -1331,235 +2629,364 @@ end
 local function create_symbol_editor_dialog()
     -- Check if song is available first
     local vb = renoise.ViewBuilder()
-    current_dialog_vb = vb  -- Store reference for keybinding access
+    current_dialog_vb = vb  -- Store reference for keybinding access and input lock updates
     
     local song = renoise.song()
     local instrument = song.selected_instrument
     local saved_labels = labeler.get_saved_labels()
         
-        -- Get break sets and format labels from global registry
-        local break_sets = {}
-        local formatted_labels = {}
+    -- Get break sets and format labels from global registry
+    local break_sets = {}
+    local formatted_labels = {}
 
-        -- Prepare formatted labels from global symbol registry
-        formatted_labels = syntax.prepare_global_symbol_labels(global_symbol_registry)
-        current_formatted_labels = formatted_labels  -- Store at module level for pagination
+    -- Prepare formatted labels from global symbol registry
+    formatted_labels = syntax.prepare_global_symbol_labels(global_symbol_registry)
+    current_formatted_labels = formatted_labels  -- Store at module level for pagination
 
-        -- Check if current instrument has breakpoints defined for legacy compatibility
-        local has_breakpoints = false
-        for _, label_data in pairs(saved_labels) do
-            if label_data.breakpoint then
-                has_breakpoints = true
-                break
-            end
+    -- Check if current instrument has breakpoints defined for legacy compatibility
+    local has_breakpoints = false
+    for _, label_data in pairs(saved_labels) do
+        if label_data.breakpoint then
+            has_breakpoints = true
+            break
         end
+    end
 
-        if has_breakpoints and #instrument.phrases > 0 then
-            local original_phrase = instrument.phrases[1]
-            break_sets = breakpoints.create_break_patterns(instrument, original_phrase, saved_labels)
-        end
+    if has_breakpoints and #instrument.phrases > 0 then
+        local original_phrase = instrument.phrases[1]
+        break_sets = breakpoints.create_break_patterns(instrument, original_phrase, saved_labels)
+    end
+
+    -- Main dialog content
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
         
-        -- Create symbol display columns only if we have valid formatted labels
-        local symbol_columns = {}
-        local symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-        
-        for i, symbol in ipairs(symbols) do
-            if formatted_labels[symbol] and #formatted_labels[symbol] > 0 then
-                local symbol_col = vb:column {
-                    width = 200,
-                    margin = 5,
-                    style = "panel",
-                    
-                    -- Symbol header (no dropdown)
-                    vb:horizontal_aligner {
-                        mode = "center",
-                        vb:text {
-                            text = symbol,
-                            font = "big",
-                            style = "strong"
-                        }
-                    },
-                    vb:space { height = 5 }
-                }
+        -- Main content row: Left side (Collapsible) and Right side (Symbol Grid)
+        vb:row {
+            spacing = 15,
+            
+            -- Left side: Collapsible sections
+            vb:column {
+                spacing = 10,
+                width = ui_collapsed and 60 or 450,  -- Dynamic width based on collapse state
                 
-                -- Add each formatted label
-                for _, label_text in ipairs(formatted_labels[symbol]) do
-                    symbol_col:add_child(
-                        vb:text {
-                            text = label_text,
-                            font = "mono",
-                            align = "left"
-                        }
-                    )
-                    symbol_col:add_child(vb:space { height = 2 })
-                end
+                -- Collapse toggle button
+                vb:button {
+                    id = "collapse_button",
+                    text = ui_collapsed and "+" or "-",  -- Changed from "Expand"/"Collapse"
+                    width = 25,  -- Changed from 60 to match right column button size
+                    height = 25,
+                    notifier = function()
+                        toggle_ui_collapse(vb)
+                    end
+                },
                 
-                table.insert(symbol_columns, symbol_col)
-            end
-        end
-
--- Create all 30 symbol columns (A-T, 0-9) with placeholders for empty ones
-local function create_all_symbol_columns()
-    local all_symbol_columns = {}
-    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-    
-    for i, symbol in ipairs(all_symbols) do
-        local symbol_col = vb:column {
-            width = 200,
-            margin = 5,
-            style = "panel"
-        }
-        
-        -- Add placement button if symbol exists, otherwise show symbol text
-        if formatted_labels[symbol] and #formatted_labels[symbol] > 0 then
-            symbol_col:add_child(
-                vb:horizontal_aligner {
-                    mode = "center",
+                vb:space { height = 5 },
+                
+                -- Header controls (collapsible)
+                vb:row {
+                    id = "header_controls",
+                    visible = not ui_collapsed,
+                    spacing = 10,
                     vb:button {
-                        text = symbol,
-                        width = 35,
-                        height = 25,
+                        text = "Label Slices",
+                        width = 100,
                         notifier = function()
-                            editor.place_symbol(symbol)
+                            labeler.show_dialog()
+                        end
+                    },
+                    vb:button {
+                        text = "Import Labels",
+                        width = 100,
+                        notifier = function()
+                            labeler.import_labels()
+                            -- Refresh the dialog after import
+                            if dialog and dialog.visible then
+                                dialog:close()
+                                show_main_dialog()
+                            end
+                        end
+                    },
+                    vb:button {
+                        text = "Export Labels",
+                        width = 100,
+                        notifier = function()
+                            labeler.export_labels()
                         end
                     }
-                }
-            )
-        else
-            -- Show disabled text for symbols that don't exist
-            symbol_col:add_child(
-                vb:horizontal_aligner {
-                    mode = "center",
-                    vb:text {
-                        text = symbol,
-                        font = "big",
-                        style = "disabled"
+                },
+
+                -- Combined behaviors section (collapsible)
+                vb:row {
+                    id = "full_behaviors_section",
+                    visible = not ui_collapsed,
+                    spacing = 15,
+                    
+                    -- Overflow behavior section
+                    vb:column {
+                        style = "group",
+                        margin = 10,
+                        width = 210,
+                        vb:text {
+                            text = "Overflow Behavior",
+                            font = "big",
+                            style = "strong"
+                        },
+                        vb:space { height = 5 },
+                        vb:column {
+                            spacing = 3,
+                            vb:row {
+                                spacing = 10,
+                                vb:checkbox {
+                                    id = "overflow_extend",
+                                    value = (current_overflow_behavior == overflow_behavior.EXTEND),
+                                    notifier = function(value)
+                                        if value then
+                                            current_overflow_behavior = overflow_behavior.EXTEND
+                                            vb.views.overflow_next_pattern.value = false
+                                            vb.views.overflow_truncate.value = false
+                                            vb.views.overflow_loop.value = false
+                                        end
+                                    end
+                                },
+                                vb:text {
+                                    text = "Extend Pattern",
+                                    width = 120
+                                }
+                            },
+                            vb:row {
+                                spacing = 10,
+                                vb:checkbox {
+                                    id = "overflow_next_pattern",
+                                    value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN),
+                                    notifier = function(value)
+                                        if value then
+                                            current_overflow_behavior = overflow_behavior.NEXT_PATTERN
+                                            vb.views.overflow_extend.value = false
+                                            vb.views.overflow_truncate.value = false
+                                            vb.views.overflow_loop.value = false
+                                        end
+                                    end
+                                },
+                                vb:text {
+                                    text = "Next Pattern",
+                                    width = 120
+                                }
+                            },
+                            vb:row {
+                                spacing = 10,
+                                vb:checkbox {
+                                    id = "overflow_truncate",
+                                    value = (current_overflow_behavior == overflow_behavior.TRUNCATE),
+                                    notifier = function(value)
+                                        if value then
+                                            current_overflow_behavior = overflow_behavior.TRUNCATE
+                                            vb.views.overflow_extend.value = false
+                                            vb.views.overflow_next_pattern.value = false
+                                            vb.views.overflow_loop.value = false
+                                        end
+                                    end
+                                },
+                                vb:text {
+                                    text = "Truncate",
+                                    width = 120
+                                }
+                            },
+                            vb:row {
+                                spacing = 10,
+                                vb:checkbox {
+                                    id = "overflow_loop",
+                                    value = (current_overflow_behavior == overflow_behavior.LOOP),
+                                    notifier = function(value)
+                                        if value then
+                                            current_overflow_behavior = overflow_behavior.LOOP
+                                            vb.views.overflow_extend.value = false
+                                            vb.views.overflow_next_pattern.value = false
+                                            vb.views.overflow_truncate.value = false
+                                        end
+                                    end
+                                },
+                                vb:text {
+                                    text = "Loop",
+                                    width = 120
+                                }
+                            }
+                        }
+                    },
+                    
+                    -- Overwrite behavior section
+                    vb:column {
+                        style = "group",
+                        margin = 10,
+                        width = 210,
+                        vb:text {
+                            text = "Overwrite Behavior",
+                            font = "big",
+                            style = "strong"
+                        },
+                        vb:space { height = 5 },
+                        vb:row {
+                            spacing = 10,
+                            -- First column
+                            vb:column {
+                                spacing = 3,
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_sum",
+                                        value = (current_overwrite_behavior == overwrite_behavior.SUM),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.SUM
+                                                vb.views.overwrite_replace.value = false
+                                                vb.views.overwrite_substitute.value = false
+                                                vb.views.overwrite_retain.value = false
+                                                vb.views.overwrite_exclude.value = false
+                                                vb.views.overwrite_intersect.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.SUM then
+                                                vb.views.overwrite_sum.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Sum",
+                                        width = 70
+                                    }
+                                },
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_replace",
+                                        value = (current_overwrite_behavior == overwrite_behavior.REPLACE),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.REPLACE
+                                                vb.views.overwrite_sum.value = false
+                                                vb.views.overwrite_substitute.value = false
+                                                vb.views.overwrite_retain.value = false
+                                                vb.views.overwrite_exclude.value = false
+                                                vb.views.overwrite_intersect.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.REPLACE then
+                                                vb.views.overwrite_replace.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Replace",
+                                        width = 70
+                                    }
+                                },
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_substitute",
+                                        value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.SUBSTITUTE
+                                                vb.views.overwrite_sum.value = false
+                                                vb.views.overwrite_replace.value = false
+                                                vb.views.overwrite_retain.value = false
+                                                vb.views.overwrite_exclude.value = false
+                                                vb.views.overwrite_intersect.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.SUBSTITUTE then
+                                                vb.views.overwrite_substitute.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Substitute",
+                                        width = 70
+                                    }
+                                },
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_retain",
+                                        value = (current_overwrite_behavior == overwrite_behavior.RETAIN),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.RETAIN
+                                                vb.views.overwrite_sum.value = false
+                                                vb.views.overwrite_replace.value = false
+                                                vb.views.overwrite_substitute.value = false
+                                                vb.views.overwrite_exclude.value = false
+                                                vb.views.overwrite_intersect.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.RETAIN then
+                                                vb.views.overwrite_retain.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Retain",
+                                        width = 70
+                                    }
+                                }
+                            },
+                            -- Second column
+                            vb:column {
+                                spacing = 3,
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_exclude",
+                                        value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.EXCLUDE
+                                                vb.views.overwrite_sum.value = false
+                                                vb.views.overwrite_replace.value = false
+                                                vb.views.overwrite_substitute.value = false
+                                                vb.views.overwrite_retain.value = false
+                                                vb.views.overwrite_intersect.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.EXCLUDE then
+                                                vb.views.overwrite_exclude.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Exclude",
+                                        width = 70
+                                    }
+                                },
+                                vb:row {
+                                    spacing = 10,
+                                    vb:checkbox {
+                                        id = "overwrite_intersect",
+                                        value = (current_overwrite_behavior == overwrite_behavior.INTERSECT),
+                                        notifier = function(value)
+                                            if value then
+                                                current_overwrite_behavior = overwrite_behavior.INTERSECT
+                                                vb.views.overwrite_sum.value = false
+                                                vb.views.overwrite_replace.value = false
+                                                vb.views.overwrite_substitute.value = false
+                                                vb.views.overwrite_retain.value = false
+                                                vb.views.overwrite_exclude.value = false
+                                            elseif current_overwrite_behavior == overwrite_behavior.INTERSECT then
+                                                vb.views.overwrite_intersect.value = true
+                                            end
+                                        end
+                                    },
+                                    vb:text {
+                                        text = "Intersect",
+                                        width = 70
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-            )
-        end
-        
-        symbol_col:add_child(vb:space { height = 5 })
-        
-        -- Add formatted labels if they exist, otherwise show placeholder
-        if formatted_labels[symbol] and #formatted_labels[symbol] > 0 then
-            for _, label_text in ipairs(formatted_labels[symbol]) do
-                symbol_col:add_child(
-                    vb:text {
-                        text = label_text,
-                        font = "mono",
-                        align = "left"
-                    }
-                )
-                symbol_col:add_child(vb:space { height = 2 })
-            end
-        else
-            symbol_col:add_child(
-                vb:text {
-                    text = "---",
-                    style = "disabled",
-                    align = "center"
-                }
-            )
-        end
-        
-        table.insert(all_symbol_columns, symbol_col)
-    end
-    
-    return all_symbol_columns
-end
+                },
 
--- Create all symbol columns
-local all_symbol_columns = create_all_symbol_columns()
-
--- Group symbols into 3 columns of 10 symbols each for scrollable display
-local symbol_columns_grouped = {}
-for col = 1, 3 do
-    local column_symbols = {}
-    for row = 1, 10 do
-        local index = (col - 1) * 10 + row
-        if all_symbol_columns[index] then
-            table.insert(column_symbols, all_symbol_columns[index])
-        end
-    end
-    if #column_symbols > 0 then
-        table.insert(symbol_columns_grouped, vb:column {
-            spacing = 5,
-            unpack(column_symbols)
-        })
-    end
-end
-
--- Main dialog content
-local dialog_content = vb:column {
-    margin = 10,
-    spacing = 10,
-    
-    -- Header controls
-    vb:row {
-        spacing = 10,
-        vb:button {
-            text = "Label Slices",
-            width = 100,
-            notifier = function()
-                labeler.show_dialog()
-            end
-        },
-        vb:button {
-            text = "Import Labels",
-            width = 100,
-            notifier = function()
-                labeler.import_labels()
-                -- Refresh the dialog after import
-                if dialog and dialog.visible then
-                    dialog:close()
-                    show_main_dialog()
-                end
-            end
-        },
-        vb:button {
-            text = "Export Labels",
-            width = 100,
-            notifier = function()
-                labeler.export_labels()
-            end
-        },
-        vb:button {
-            text = "Clear All Symbols",
-            width = 120,
-            notifier = function()
-                -- Show confirmation dialog before clearing
-                local result = renoise.app():show_prompt("Clear All Symbols", 
-                    "This will permanently clear all symbol assignments from the global registry.\n\nAre you sure you want to continue?", 
-                    {"Clear All", "Cancel"})
-                
-                if result == "Clear All" then
-                    clear_all_symbols()
-                end
-            end
-        }
-    },
-    
-    -- Main content row: Left side (Break String + Composite) and Right side (Symbol Grid)
-    vb:row {
-        spacing = 15,
-        
-        -- Left side: Break String and Composite Symbols
-        vb:column {
-            spacing = 10,
-            width = 450,
-            
-            -- UPDATED: Combined Overflow and Overwrite behaviors section (added Substitute)
-            vb:row {
-                spacing = 15,
-                
-                -- Overflow behavior section (existing)
+                -- Instrument source behavior section (collapsible)
                 vb:column {
+                    id = "instrument_source_section",
+                    visible = not ui_collapsed,
                     style = "group",
                     margin = 10,
-                    width = 210,
+                    width = 430,
                     vb:text {
-                        text = "Overflow Behavior",
+                        text = "Instrument Source",
                         font = "big",
                         style = "strong"
                     },
@@ -1569,503 +2996,294 @@ local dialog_content = vb:column {
                         vb:row {
                             spacing = 10,
                             vb:checkbox {
-                                id = "overflow_extend",
-                                value = (current_overflow_behavior == overflow_behavior.EXTEND),
+                                id = "instrument_source_embedded",
+                                value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED),
                                 notifier = function(value)
                                     if value then
-                                        current_overflow_behavior = overflow_behavior.EXTEND
-                                        -- Uncheck other options
-                                        vb.views.overflow_next_pattern.value = false
-                                        vb.views.overflow_truncate.value = false
-                                        vb.views.overflow_loop.value = false
+                                        current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
+                                        vb.views.instrument_source_current.value = false
+                                    elseif current_instrument_source_behavior == instrument_source_behavior.EMBEDDED then
+                                        vb.views.instrument_source_embedded.value = true
                                     end
                                 end
                             },
                             vb:text {
-                                text = "Extend Pattern",
-                                width = 120
+                                text = "Use Embedded Instrument (from symbol definition)",
+                                width = 350
                             }
                         },
                         vb:row {
                             spacing = 10,
                             vb:checkbox {
-                                id = "overflow_next_pattern",
-                                value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN),
+                                id = "instrument_source_current",
+                                value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED),
                                 notifier = function(value)
                                     if value then
-                                        current_overflow_behavior = overflow_behavior.NEXT_PATTERN
-                                        -- Uncheck other options
-                                        vb.views.overflow_extend.value = false
-                                        vb.views.overflow_truncate.value = false
-                                        vb.views.overflow_loop.value = false
+                                        current_instrument_source_behavior = instrument_source_behavior.CURRENT_SELECTED
+                                        vb.views.instrument_source_embedded.value = false
+                                    elseif current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED then
+                                        vb.views.instrument_source_current.value = true
                                     end
                                 end
                             },
                             vb:text {
-                                text = "Next Pattern",
-                                width = 120
-                            }
-                        },
-                        vb:row {
-                            spacing = 10,
-                            vb:checkbox {
-                                id = "overflow_truncate",
-                                value = (current_overflow_behavior == overflow_behavior.TRUNCATE),
-                                notifier = function(value)
-                                    if value then
-                                        current_overflow_behavior = overflow_behavior.TRUNCATE
-                                        -- Uncheck other options
-                                        vb.views.overflow_extend.value = false
-                                        vb.views.overflow_next_pattern.value = false
-                                        vb.views.overflow_loop.value = false
-                                    end
-                                end
-                            },
-                            vb:text {
-                                text = "Truncate",
-                                width = 120
-                            }
-                        },
-                        vb:row {
-                            spacing = 10,
-                            vb:checkbox {
-                                id = "overflow_loop",
-                                value = (current_overflow_behavior == overflow_behavior.LOOP),
-                                notifier = function(value)
-                                    if value then
-                                        current_overflow_behavior = overflow_behavior.LOOP
-                                        -- Uncheck other options
-                                        vb.views.overflow_extend.value = false
-                                        vb.views.overflow_next_pattern.value = false
-                                        vb.views.overflow_truncate.value = false
-                                    end
-                                end
-                            },
-                            vb:text {
-                                text = "Loop",
-                                width = 120
+                                text = "Use Currently Selected Instrument",
+                                width = 350
                             }
                         }
                     }
                 },
-                
-                -- UPDATED: Overwrite behavior section (added Exclude and Intersect options - all in one group with two columns)
+
+                -- Break string input with quick insert buttons (collapsible)
                 vb:column {
+                    id = "break_string_section",
+                    visible = not ui_collapsed,
                     style = "group",
                     margin = 10,
-                    width = 210,
                     vb:text {
-                        text = "Overwrite Behavior",
+                        text = "Break String",
                         font = "big",
                         style = "strong"
                     },
                     vb:space { height = 5 },
-                    vb:row {
-                        spacing = 10,
-                        -- First column - existing 4 behaviors
-                        vb:column {
-                            spacing = 3,
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_sum",
-                                    value = (current_overwrite_behavior == overwrite_behavior.SUM),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.SUM
-                                            -- Uncheck other options
-                                            vb.views.overwrite_replace.value = false
-                                            vb.views.overwrite_substitute.value = false
-                                            vb.views.overwrite_retain.value = false
-                                            vb.views.overwrite_exclude.value = false
-                                            vb.views.overwrite_intersect.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.SUM then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_sum.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Sum",
-                                    width = 70
-                                }
-                            },
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_replace",
-                                    value = (current_overwrite_behavior == overwrite_behavior.REPLACE),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.REPLACE
-                                            -- Uncheck other options
-                                            vb.views.overwrite_sum.value = false
-                                            vb.views.overwrite_substitute.value = false
-                                            vb.views.overwrite_retain.value = false
-                                            vb.views.overwrite_exclude.value = false
-                                            vb.views.overwrite_intersect.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.REPLACE then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_replace.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Replace",
-                                    width = 70
-                                }
-                            },
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_substitute",
-                                    value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.SUBSTITUTE
-                                            -- Uncheck other options
-                                            vb.views.overwrite_sum.value = false
-                                            vb.views.overwrite_replace.value = false
-                                            vb.views.overwrite_retain.value = false
-                                            vb.views.overwrite_exclude.value = false
-                                            vb.views.overwrite_intersect.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.SUBSTITUTE then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_substitute.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Substitute",
-                                    width = 70
-                                }
-                            },
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_retain",
-                                    value = (current_overwrite_behavior == overwrite_behavior.RETAIN),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.RETAIN
-                                            -- Uncheck other options
-                                            vb.views.overwrite_sum.value = false
-                                            vb.views.overwrite_replace.value = false
-                                            vb.views.overwrite_substitute.value = false
-                                            vb.views.overwrite_exclude.value = false
-                                            vb.views.overwrite_intersect.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.RETAIN then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_retain.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Retain",
-                                    width = 70
-                                }
-                            }
-                        },
-                        -- Second column - Exclude and Intersect behaviors
-                        vb:column {
-                            spacing = 3,
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_exclude",
-                                    value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.EXCLUDE
-                                            -- Uncheck other options
-                                            vb.views.overwrite_sum.value = false
-                                            vb.views.overwrite_replace.value = false
-                                            vb.views.overwrite_substitute.value = false
-                                            vb.views.overwrite_retain.value = false
-                                            vb.views.overwrite_intersect.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.EXCLUDE then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_exclude.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Exclude",
-                                    width = 70
-                                }
-                            },
-                            vb:row {
-                                spacing = 10,
-                                vb:checkbox {
-                                    id = "overwrite_intersect",
-                                    value = (current_overwrite_behavior == overwrite_behavior.INTERSECT),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overwrite_behavior = overwrite_behavior.INTERSECT
-                                            -- Uncheck other options
-                                            vb.views.overwrite_sum.value = false
-                                            vb.views.overwrite_replace.value = false
-                                            vb.views.overwrite_substitute.value = false
-                                            vb.views.overwrite_retain.value = false
-                                            vb.views.overwrite_exclude.value = false
-                                        elseif current_overwrite_behavior == overwrite_behavior.INTERSECT then
-                                            -- Prevent unchecking if this is the current selection
-                                            vb.views.overwrite_intersect.value = true
-                                        end
-                                    end
-                                },
-                                vb:text {
-                                    text = "Intersect",
-                                    width = 70
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-
-            -- Instrument source behavior section
-            vb:column {
-                style = "group",
-                margin = 10,
-                width = 430,
-                vb:text {
-                    text = "Instrument Source",
-                    font = "big",
-                    style = "strong"
-                },
-                vb:space { height = 5 },
-                vb:column {
-                    spacing = 3,
-                    vb:row {
-                        spacing = 10,
-                        vb:checkbox {
-                            id = "instrument_source_embedded",
-                            value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED),
-                            notifier = function(value)
-                                if value then
-                                    current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
-                                    -- Uncheck other option
-                                    vb.views.instrument_source_current.value = false
-                                elseif current_instrument_source_behavior == instrument_source_behavior.EMBEDDED then
-                                    -- Prevent unchecking if this is the current selection
-                                    vb.views.instrument_source_embedded.value = true
-                                end
-                            end
-                        },
-                        vb:text {
-                            text = "Use Embedded Instrument (from symbol definition)",
-                            width = 350
-                        }
+                    vb:textfield {
+                        id = "break_string",
+                        width = 400,
+                        height = 25,
+                        text = ""
                     },
+                    vb:space { height = 5 },
                     vb:row {
-                        spacing = 10,
-                        vb:checkbox {
-                            id = "instrument_source_current",
-                            value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED),
-                            notifier = function(value)
-                                if value then
-                                    current_instrument_source_behavior = instrument_source_behavior.CURRENT_SELECTED
-                                    -- Uncheck other option
-                                    vb.views.instrument_source_embedded.value = false
-                                elseif current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED then
-                                    -- Prevent unchecking if this is the current selection
-                                    vb.views.instrument_source_current.value = true
-                                end
-                            end
-                        },
+                        spacing = 5,
                         vb:text {
-                            text = "Use Currently Selected Instrument",
-                            width = 350
-                        }
-                    }
-                }
-            },
-            
-            
-            -- Break string input with quick insert buttons
-            vb:column {
-                style = "group",
-                margin = 10,
-                vb:text {
-                    text = "Break String",
-                    font = "big",
-                    style = "strong"
-                },
-                vb:space { height = 5 },
-                vb:textfield {
-                    id = "break_string",
-                    width = 400,
-                    height = 25,
-                    text = ""
-                },
-                vb:space { height = 5 },
-                vb:row {
-                    spacing = 5,
+                            text = "Quick Insert:",
+                            style = "strong"
+                        },
+                        (function()
+                            -- Create quick insert buttons from global registry
+                            local available_symbols = {}
+                            for symbol, _ in pairs(current_formatted_labels) do
+                                table.insert(available_symbols, symbol)
+                            end
+                            table.sort(available_symbols)
+                            
+                            if #available_symbols > 0 then
+                                return vb:row {
+                                    spacing = 3,
+                                    unpack((function()
+                                        local buttons = {}
+                                        for i = 1, math.min(#available_symbols, 10) do
+                                            local symbol_letter = available_symbols[i]
+                                            table.insert(buttons, vb:button {
+                                                text = symbol_letter,
+                                                width = 30,
+                                                height = 20,
+                                                notifier = function()
+                                                    local break_string_view = vb.views.break_string
+                                                    if break_string_view then
+                                                        break_string_view.text = break_string_view.text .. symbol_letter
+                                                    end
+                                                end
+                                            })
+                                        end
+                                        return buttons
+                                    end)())
+                                }
+                            else
+                                return vb:text {
+                                    text = "No symbols available",
+                                    style = "disabled"
+                                }
+                            end
+                        end)()
+                    },
+                    vb:space { height = 3 },
                     vb:text {
-                        text = "Quick Insert:",
+                        text = "Tip: Assign keyboard shortcuts in Preferences > Keys > Global > Tools",
+                        style = "disabled"
+                    }
+                },
+
+                -- Composite symbols section (collapsible)
+                vb:column {
+                    id = "composite_symbols_section",
+                    visible = not ui_collapsed,
+                    style = "group",
+                    margin = 10,
+                    vb:text {
+                        text = "Composite Symbols",
+                        font = "big",
                         style = "strong"
                     },
-                    (function()
-                        -- Create quick insert buttons from global registry
-                        local available_symbols = {}
-                        for symbol, _ in pairs(current_formatted_labels) do
-                            table.insert(available_symbols, symbol)
+                    vb:space { height = 5 },
+                    vb:column {
+                        id = "composite_symbols",
+                        spacing = 3
+                    },
+                    vb:button {
+                        id = "add_symbol_button",
+                        text = "+",
+                        width = 25,
+                        height = 25,
+                        notifier = function()
+                            add_composite_symbol(vb)
                         end
-                        table.sort(available_symbols)
-                        
-                        if #available_symbols > 0 then
-                            return vb:row {
-                                spacing = 3,
-                                unpack((function()
-                                    local buttons = {}
-                                    for i = 1, math.min(#available_symbols, 10) do  -- Show up to 10 quick buttons
-                                        local symbol_letter = available_symbols[i]
-                                        table.insert(buttons, vb:button {
-                                            text = symbol_letter,
-                                            width = 30,
-                                            height = 20,
-                                            notifier = function()
-                                                local break_string_view = vb.views.break_string
-                                                if break_string_view then
-                                                    break_string_view.text = break_string_view.text .. symbol_letter
-                                                end
-                                            end
-                                        })
-                                    end
-                                    return buttons
-                                end)())
-                            }
-                        else
-                            return vb:text {
-                                text = "No symbols available",
-                                style = "disabled"
-                            }
-                        end
-                    end)()
+                    }
                 },
-                vb:space { height = 3 },
-                vb:text {
-                    text = "Tip: Assign keyboard shortcuts in Preferences > Keys > Global > Tools",
-                    style = "disabled"
+
+                -- Compact behaviors section (only visible when collapsed)
+                vb:column {
+                    id = "compact_behaviors_section",
+                    visible = ui_collapsed,
+                    spacing = 10,
+                    create_compact_overflow_section(vb),
+                    create_compact_overwrite_section(vb),
+                    create_compact_instrument_source_section(vb)
                 }
             },
             
-            -- Composite symbols section
+            -- Right side: Symbol Grid
             vb:column {
+                id = "right_column_container",
                 style = "group",
                 margin = 10,
-                vb:text {
-                    text = "Composite Symbols",
-                    font = "big",
-                    style = "strong"
-                },
-                vb:space { height = 5 },
-                vb:column {
-                    id = "composite_symbols",
-                    spacing = 3
-                },
-                vb:button {
-                    id = "add_symbol_button",
-                    text = "+",
-                    width = 25,
-                    height = 25,
-                    notifier = function()
-                        add_composite_symbol(vb)
-                    end
-                }
-            }
-        },
-        
-        -- Right side: Paginated Symbol Grid
-        vb:column {
-            style = "group",
-            margin = 10,
-            width = 520,
-            
-            vb:text {
-                text = "Symbols",
-                font = "big",
-                style = "strong"
-            },
-            vb:space { height = 10 },
-            
-            -- Pagination controls
-            vb:row {
-                spacing = 10,
-                vb:button {
-                    id = "prev_page_btn",
-                    text = "◄ Previous",
-                    width = 80,
-                    active = (function()
-                        local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-                        local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
-                        return symbol_pagination.current_page > 1
-                    end)(),
-                    notifier = function()
-                        prev_symbol_page(vb)
-                    end
-                },
-                vb:text {
-                    id = "page_info",
-                    text = (function()
-                        local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-                        local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
-                        return string.format("Page %d of %d", symbol_pagination.current_page, total_pages)
-                    end)(),
-                    width = 100,
-                    align = "center",
-                    font = "bold"
-                },
-                vb:button {
-                    id = "next_page_btn",
-                    text = "Next ►",
-                    width = 80,
-                    active = (function()
-                        local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-                        local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
-                        return symbol_pagination.current_page < total_pages
-                    end)(),
-                    notifier = function()
-                        next_symbol_page(vb)
-                    end
-                }
-            },
-            
-            vb:space { height = 10 },
-            
-            -- Symbol grid for current page (3x4 = 12 symbols per page)
-            (function()
-                local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-                local start_index = (symbol_pagination.current_page - 1) * symbol_pagination.symbols_per_page + 1
-                local end_index = math.min(start_index + symbol_pagination.symbols_per_page - 1, #all_symbols)
+                width = 500,
+
                 
-                local grid_column = vb:column {
+                -- Right column header with collapse and category toggle buttons
+                vb:row {
                     spacing = 5,
-                    width = 500,
-                    height = 240
-                }
+                    vb:button {
+                        id = "category_toggle",
+                        text = category_view_enabled and "…" or "≡",
+                        width = 25,
+                        height = 25,
+                        tooltip = "Toggle tag view",
+                        notifier = function()
+                            toggle_tag_view(vb)
+                        end
+                    },
+                    vb:horizontal_aligner {
+                        mode = "right",
+                        vb:button {
+                            id = "right_collapse_button",
+                            text = right_column_collapsed and "+" or "-",
+                            width = 25,
+                            height = 25,
+                            notifier = function()
+                                toggle_right_column_collapse(vb)
+                            end
+                        }
+                    }
+                },
                 
-                -- Create 3x4 grid for current page
-                for row = 1, 3 do
-                    local row_columns = {}
-                    for col = 1, 4 do
-                        local symbol_index = start_index + (row - 1) * 4 + (col - 1)
+                vb:space { height = 5 },
+                
+                -- Full right column content (visible when not collapsed)
+                vb:column {
+                    id = "right_full_content",
+                    visible = not right_column_collapsed,
+                    spacing = 10,
+                    
+                    -- Clear All Symbols button
+                    vb:horizontal_aligner {
+                        mode = "right",
+                        vb:button {
+                            text = "Clear All Symbols",
+                            width = 120,
+                            notifier = function()
+                                local result = renoise.app():show_prompt("Clear All Symbols", 
+                                    "This will permanently clear all symbol assignments from the global registry.\n\nAre you sure you want to continue?", 
+                                    {"Clear All", "Cancel"})
+                                
+                                if result == "Clear All" then
+                                    -- Preserve unsaved tag inputs before clearing
+                                    if current_dialog_vb then
+                                        preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+                                    end
+                                    clear_all_symbols()
+                                end
+                            end
+                        }
+                    },
+                    
+                    vb:text {
+                        text = "Symbols",
+                        font = "big",
+                        style = "strong"
+                    },
+                    
+                    -- Pagination controls
+                    vb:row {
+                        spacing = 10,
+                        vb:button {
+                            id = "prev_page_btn",
+                            text = "◄ Previous",
+                            width = 80,
+                            active = (function()
+                                local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                                local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
+                                return symbol_pagination.current_page > 1
+                            end)(),
+                            notifier = function()
+                                prev_symbol_page(vb)
+                            end
+                        },
+                        vb:text {
+                            id = "page_info",
+                            text = (function()
+                                local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                                local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
+                                return string.format("Page %d of %d", symbol_pagination.current_page, total_pages)
+                            end)(),
+                            width = 100,
+                            align = "center",
+                            font = "bold"
+                        },
+                        vb:button {
+                            id = "next_page_btn",
+                            text = "Next ►",
+                            width = 80,
+                            active = (function()
+                                local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                                local total_pages = math.ceil(#all_symbols / symbol_pagination.symbols_per_page)
+                                return symbol_pagination.current_page < total_pages
+                            end)(),
+                            notifier = function()
+                                next_symbol_page(vb)
+                            end
+                        }
+                    },
+                    
+                    -- Symbol grid for current page (3x4 = 12 symbols per page)
+                    (function()
+                        local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                        local start_index = (symbol_pagination.current_page - 1) * symbol_pagination.symbols_per_page + 1
+                        local end_index = math.min(start_index + symbol_pagination.symbols_per_page - 1, #all_symbols)
                         
-                        if symbol_index <= end_index then
-                            local symbol = all_symbols[symbol_index]
-                            local symbol_col = vb:column {
-                                width = 120,
-                                margin = 3,
-                                style = "panel"
-                            }
-                            
-                            -- Add placement button if symbol exists, otherwise show disabled text
-                            if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
-                                symbol_col:add_child(
-                                    vb:horizontal_aligner {
-                                        mode = "center",
-                                        vb:button {
+                        local grid_column = vb:column {
+                            spacing = 5,
+                            width = 500,
+                            height = 240
+                        }
+                        
+                        -- Create 3x4 grid for current page
+                        for row = 1, 3 do
+                            local row_columns = {}
+                            for col = 1, 4 do
+                                local symbol_index = start_index + (row - 1) * 4 + (col - 1)
+                                
+                                if symbol_index <= end_index then
+                                    local symbol = all_symbols[symbol_index]
+                                    local symbol_col = vb:column {
+                                        width = 120,
+                                        margin = 3,
+                                        style = "panel"
+                                    }
+                                    
+                                    -- Add placement button if symbol exists, otherwise show disabled text
+                                    if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
+                                        local grid_symbol_button = vb:button {
                                             text = symbol,
                                             width = 35,
                                             height = 25,
@@ -2073,122 +3291,278 @@ local dialog_content = vb:column {
                                                 editor.place_symbol(symbol)
                                             end
                                         }
-                                    }
-                                )
-                            else
-                                -- Show disabled text for symbols that don't exist
-                                symbol_col:add_child(
-                                    vb:horizontal_aligner {
-                                        mode = "center",
-                                        vb:text {
-                                            text = symbol,
-                                            font = "big",
-                                            style = "disabled"
-                                        }
-                                    }
-                                )
-                            end
-                            
-                            symbol_col:add_child(vb:space { height = 5 })
-                            
-                            -- Add formatted labels if they exist, otherwise show placeholder
-                            if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
-                                for _, label_text in ipairs(current_formatted_labels[symbol]) do
+                                        
+                                        -- Store reference for visual feedback
+                                        symbol_button_refs[symbol] = grid_symbol_button
+                                        
+                                        -- Apply saved color immediately if it exists
+                                        local symbol_color = get_symbol_color(symbol)
+                                        if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
+                                            grid_symbol_button.color = color_definitions[symbol_color].darker
+                                        end
+                                        
+                                        symbol_col:add_child(
+                                            vb:horizontal_aligner {
+                                                mode = "center",
+                                                grid_symbol_button
+                                            }
+                                        )
+                                    else
+                                        -- Show disabled text for symbols that don't exist
+                                        symbol_col:add_child(
+                                            vb:horizontal_aligner {
+                                                mode = "center",
+                                                vb:text {
+                                                    text = symbol,
+                                                    font = "big",
+                                                    style = "disabled"
+                                                }
+                                            }
+                                        )
+                                    end
+                                    
+                                    symbol_col:add_child(vb:space { height = 5 })
+                                    
+                                    -- Add formatted labels if they exist, otherwise show placeholder
+                                    if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
+                                        for _, label_text in ipairs(current_formatted_labels[symbol]) do
+                                            symbol_col:add_child(
+                                                vb:text {
+                                                    text = label_text,
+                                                    font = "mono",
+                                                    align = "left"
+                                                }
+                                            )
+                                            symbol_col:add_child(vb:space { height = 1 })
+                                        end
+                                    else
+                                        symbol_col:add_child(
+                                            vb:text {
+                                                text = "---",
+                                                style = "disabled",
+                                                align = "center"
+                                            }
+                                        )
+                                    end
+                                    
+                                    -- NEW: Add color UI row (before tags)
+                                    local current_color = get_symbol_color(symbol)
+                                    local color_is_saved = color_editing_states[symbol] or false
+                                    
                                     symbol_col:add_child(
-                                        vb:text {
-                                            text = label_text,
-                                            font = "mono",
-                                            align = "left"
+                                        vb:row {
+                                            id = "color_row_" .. symbol,
+                                            visible = category_view_enabled,  -- Same visibility as tags
+                                            spacing = 2,
+                                            width = 102,  -- Fixed width to prevent expansion (80 + 20 + 2 spacing)
+                                            
+                                            -- Container for the popup/display area to maintain consistent width
+                                            vb:column {
+                                                width = 80,
+                                                height = 20,
+                                                
+                                                -- Popup (for editing)
+                                                vb:popup {
+                                                    id = "color_popup_" .. symbol,
+                                                    width = 80,
+                                                    height = 20,
+                                                    items = color_dropdown_items,
+                                                    value = (function()
+                                                        local color_index = table.find(color_dropdown_items, current_color)
+                                                        return color_index or 1
+                                                    end)(),
+                                                    visible = not (color_is_saved and current_color and current_color ~= "")
+                                                },
+                                                
+                                                -- Text display (for saved state) - wrapped in aligner for consistent positioning
+                                                vb:horizontal_aligner {
+                                                    mode = "left",
+                                                    width = 80,
+                                                    height = 20,
+                                                    vb:text {
+                                                        id = "color_text_" .. symbol,
+                                                        text = current_color or "",
+                                                        style = "strong",
+                                                        tooltip = "Color: " .. (current_color or ""),
+                                                        visible = (color_is_saved and current_color and current_color ~= "")
+                                                    }
+                                                }
+                                            },
+                                            
+                                            -- Save/Edit button
+                                            vb:button {
+                                                id = "color_save_" .. symbol,
+                                                text = (color_is_saved and current_color and current_color ~= "") and "[■]" or "[□]",
+                                                width = 20,
+                                                height = 20,
+                                                tooltip = (color_is_saved and current_color and current_color ~= "") and "Click to edit color" or "Click to save color",
+                                                notifier = function()
+                                                    local current_color_is_saved = color_editing_states[symbol] or false
+                                                    local current_col = get_symbol_color(symbol)
+                                                    
+                                                    if current_color_is_saved and current_col and current_col ~= "" then
+                                                        -- Currently saved, so unlock for editing
+                                                        unlock_symbol_color(symbol, vb)
+                                                    else
+                                                        -- Currently editing, so save
+                                                        local color_popup = vb.views["color_popup_" .. symbol]
+                                                        if color_popup then
+                                                            local selected_color = color_dropdown_items[color_popup.value]
+                                                            save_symbol_color(symbol, selected_color, vb)
+                                                        end
+                                                    end
+                                                end
+                                            }
                                         }
                                     )
-                                    symbol_col:add_child(vb:space { height = 1 })
-                                end
-                            else
-                                symbol_col:add_child(
-                                    vb:text {
-                                        text = "---",
-                                        style = "disabled",
-                                        align = "center"
+                                    
+                                    -- NEW: Add tag UI container (after color row)
+                                    local current_tags = get_symbol_tags(symbol)
+                                    local tag_count = math.max(1, #current_tags)
+                                    
+                                    -- Create tag container
+                                    local tag_container = vb:column {
+                                        id = "tag_container_" .. symbol,
+                                        visible = category_view_enabled,
+                                        spacing = 1
                                     }
-                                )
+                                    
+                                    -- Add tag input rows
+                                    for i = 1, tag_count do
+                                        local tag_text = current_tags[i] or ""
+                                        local is_saved = tag_editing_states[symbol] and tag_editing_states[symbol][i] or false
+                                        
+                                        local tag_row = create_tag_input_row(symbol, i, tag_text, is_saved, vb)
+                                        tag_container:add_child(tag_row)
+                                    end
+                                    
+                                    -- Add +/- buttons row
+                                    local buttons_row = create_tag_buttons_row(symbol, vb)
+                                    tag_container:add_child(buttons_row)
+                                    
+                                    symbol_col:add_child(tag_container)
+                                    
+                                    -- Update button states after container is created
+                                    update_tag_button_states(symbol, vb)
+                                    
+                                    table.insert(row_columns, symbol_col)
+                                else
+                                    -- Empty placeholder
+                                    table.insert(row_columns, vb:column {
+                                        width = 120,
+                                        height = 60,
+                                        margin = 3
+                                    })
+                                end
                             end
                             
-                            table.insert(row_columns, symbol_col)
-                        else
-                            -- Empty placeholder
-                            table.insert(row_columns, vb:column {
-                                width = 120,
-                                height = 60,
-                                margin = 3
+                            -- Add row to grid
+                            grid_column:add_child(vb:row {
+                                spacing = 5,
+                                unpack(row_columns)
                             })
                         end
-                    end
+                        
+                        return grid_column
+                    end)(),
                     
-                    -- Add row to grid
-                    grid_column:add_child(vb:row {
-                        spacing = 5,
-                        unpack(row_columns)
-                    })
-                end
-                
-                return grid_column
-            end)(),
-            
-            vb:space { height = 15 },
-            
-            -- Export/Import Alphabet buttons (bottom right)
-            vb:horizontal_aligner {
-                mode = "right",
-                vb:row {
-                    spacing = 10,
-                    vb:button {
-                        text = "Export Alphabet",
-                        width = 120,
-                        notifier = function()
-                            export_global_alphabet()
-                        end
-                    },
-                    vb:button {
-                        text = "Import Alphabet",
-                        width = 120,
-                        notifier = function()
-                            import_global_alphabet()
-                        end
+                    vb:space { height = 15 },
+                    
+                    -- Combined row: Input lock indicator (left) and Export/Import buttons (right)
+                    vb:row {
+                        spacing = 10,
+                        
+                        -- Input lock status indicator (left side)
+                        vb:column {
+                            spacing = 3,
+                            vb:text {
+                                id = "input_lock_status",
+                                text = "Input Lock",
+                                font = "big",
+                                style = "normal",
+                                align = "left"
+                            },
+                            vb:text {
+                                id = "input_lock_description",
+                                text = "Double-press Ctrl to activate",
+                                style = "disabled",
+                                align = "left"
+                            }
+                        },
+                        
+                        -- Spacer to push buttons to the right
+                        vb:space { width = 1 },
+                        
+                        -- Export/Import Alphabet buttons (right side)
+                        vb:horizontal_aligner {
+                            mode = "right",
+                            vb:row {
+                                spacing = 10,
+                                vb:button {
+                                    text = "Export Alphabet",
+                                    width = 120,
+                                    notifier = function()
+                                        export_global_alphabet()
+                                    end
+                                },
+                                vb:button {
+                                    text = "Import Alphabet",
+                                    width = 120,
+                                    notifier = function()
+                                        import_global_alphabet()
+                                    end
+                                }
+                            }
+                        }
                     }
+                },
+                
+                -- Compact right column content (visible when collapsed)
+                vb:column {
+                    id = "right_compact_content",
+                    visible = right_column_collapsed,
+                    create_compact_right_column(vb)
                 }
             }
-        }
-    },
-    
-    -- Action buttons
-    vb:row {
-        spacing = 10,
-        vb:button {
-            text = "Commit to Phrase",
-            width = 150,
-            height = 30,
-            notifier = function()
-                commit_to_phrase(vb, break_sets)
-            end
         },
-        vb:button {
-            text = "Import Syntax",
-            width = 100,
-            notifier = function()
-                syntax.import_syntax(vb)
-            end
-        },
-        vb:button {
-            text = "Export Syntax",
-            width = 100,
-            notifier = function()
-                syntax.export_syntax(vb)
-            end
+        
+        -- Action buttons (collapsible)
+        vb:row {
+            id = "action_buttons",
+            visible = not ui_collapsed,
+            spacing = 10,
+            vb:button {
+                text = "Commit to Phrase",
+                width = 150,
+                height = 30,
+                notifier = function()
+                    commit_to_phrase(vb, break_sets)
+                end
+            },
+            vb:button {
+                text = "Import Syntax",
+                width = 100,
+                notifier = function()
+                    syntax.import_syntax(vb)
+                end
+            },
+            vb:button {
+                text = "Export Syntax",
+                width = 100,
+                notifier = function()
+                    syntax.export_syntax(vb)
+                end
+            }
         }
     }
-}
     
     return dialog_content
+end
+
+-- Main dialog key handler for input lock
+local function main_dialog_key_handler(dialog, key)
+    -- Let input lock system handle the key event
+    return input_lock.handle_key_event(key)
 end
 
 -- Add composite symbol row
@@ -2288,6 +3662,9 @@ function show_main_dialog()
     if not tool_initialized then
         load_global_symbol_registry()
         tool_initialized = true
+    else
+        -- Ensure tag editing states are up to date
+        initialize_tag_editing_states()
     end
     
     -- Initialize editor when dialog is shown (safe because song exists)
@@ -2303,7 +3680,29 @@ function show_main_dialog()
     
     local dialog_content = create_symbol_editor_dialog()
     if dialog_content then
-        dialog = renoise.app():show_custom_dialog("BreakFast", dialog_content)
+        -- Set up key handler options for input lock
+        local key_handler_options = {
+            send_key_repeat = false,
+            send_key_release = true
+        }
+        
+        dialog = renoise.app():show_custom_dialog("BreakFast", dialog_content, main_dialog_key_handler, key_handler_options)
+        
+        -- Initialize input lock system (editor module is already required at top of file)
+         if editor then
+            input_lock.initialize(editor, update_input_lock_visual, update_symbol_feedback)
+        else
+            print("ERROR: Editor module not available for input lock initialization")
+        end
+
+        -- Apply saved colors to symbol buttons after dialog creation
+        if current_dialog_vb then
+            for symbol, symbol_data in pairs(global_symbol_registry) do
+                if symbol_data.color and symbol_data.color ~= "" then
+                    apply_symbol_button_color(symbol, symbol_data.color, current_dialog_vb)
+                end
+            end
+        end
 
         -- Store formatted_labels reference and initialize pagination
         if current_dialog_vb then
@@ -2344,7 +3743,11 @@ end
 local function safe_labeler_refresh()
     print("DEBUG: safe_labeler_refresh called")
     if dialog and dialog.visible then
-        print("DEBUG: Main dialog is visible, closing and reopening")
+        print("DEBUG: Main dialog is visible, preserving tag inputs and reopening")
+        -- Preserve all unsaved tag inputs before refresh
+        if current_dialog_vb then
+            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+        end
         dialog:close()
         show_main_dialog()
     else
@@ -2399,6 +3802,10 @@ local labeler_check_notifier = function()
         -- Labeler was just closed, trigger refresh like import does
         print("DEBUG: Labeler dialog closed, triggering manual refresh")
         if dialog and dialog.visible then
+            -- Preserve all unsaved tag inputs before refresh
+            if current_dialog_vb then
+                preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+            end
             dialog:close()
             show_main_dialog()
         end
@@ -2437,10 +3844,16 @@ function cleanup()
     -- Save global symbol registry before cleanup
     save_global_symbol_registry()
     
+    -- Cleanup input lock system
+    input_lock.cleanup()
+    
     if dialog and dialog.visible then
         dialog:close()
         dialog = nil
     end
+
+    -- Clear symbol button references
+    symbol_button_refs = {}    
     labeler.cleanup()
     editor.cleanup()
     tool_initialized = false

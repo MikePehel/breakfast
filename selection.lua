@@ -169,6 +169,77 @@ function selection.calculate_note_distances(notes, selection_data, pattern)
     end
 end
 
+-- Apply labels from the current instrument's BreakFast labeler data to a range symbol
+function selection.apply_labels_to_range_symbol(symbol_data, notes)
+    print("DEBUG: Applying labels to range symbol")
+    
+    if not renoise.song() then
+        print("DEBUG: No song available for label mapping")
+        return {}
+    end
+    
+    local song = renoise.song()
+    local current_instrument_index = song.selected_instrument_index
+    
+    -- Get saved labels for the currently selected instrument (same as breakpoint workflow)
+    local labeler = require("labeler")
+    local saved_labels = labeler.get_labels_for_instrument(current_instrument_index)
+    
+    print("DEBUG: Current instrument index: " .. current_instrument_index)
+    print("DEBUG: Available saved_labels:")
+    for hex_key, label_data in pairs(saved_labels or {}) do
+        print("DEBUG:   " .. hex_key .. " -> " .. (label_data.label or ""))
+    end
+    
+    if not saved_labels or next(saved_labels) == nil then
+        print("DEBUG: No saved labels found for current instrument " .. current_instrument_index)
+        return {}
+    end
+    
+    local applied_labels = {}
+    local labels_applied_count = 0
+    
+    -- For each note in the captured selection, map note values to slice labels
+    for i, note in ipairs(notes) do
+        local note_value = note.note_value
+        local pattern_instrument_index = note.instrument_value + 1
+        
+        print("DEBUG: Checking note " .. i .. " from pattern instrument " .. pattern_instrument_index .. " with note_value " .. note_value)
+        
+        -- Calculate slice index from note value
+        -- Based on your specification: slice 1 (hex key 01) = note value 37
+        -- So: note 37 = slice 1, note 38 = slice 2, etc.
+        local slice_index = 0  -- Default to main sample
+        
+        if note_value >= 37 then
+            slice_index = note_value - 36  -- note 37 = slice 1, note 38 = slice 2, etc.
+        end
+        
+        print("DEBUG: Note mapping - note_value " .. note_value .. " -> slice_index " .. slice_index)
+        
+        -- Convert to hex key format (same as labeler system)
+        local hex_key = string.format("%02X", slice_index + 1)  -- +1 because labeler uses 1-based indexing
+        
+        print("DEBUG: Note value " .. note_value .. " maps to slice " .. slice_index .. " (hex_key: " .. hex_key .. ")")
+        
+        -- Check if we have a saved label for this slice in the current instrument
+        if saved_labels[hex_key] then
+            applied_labels[hex_key] = {
+                label = saved_labels[hex_key].label or "",
+                breakpoint = saved_labels[hex_key].breakpoint or false,
+                instrument_index = current_instrument_index  -- Use current instrument, not pattern instrument
+            }
+            labels_applied_count = labels_applied_count + 1
+            print("DEBUG: Applied label '" .. (saved_labels[hex_key].label or "") .. "' from current instrument " .. current_instrument_index .. " slice " .. slice_index)
+        else
+            print("DEBUG: No label found for slice " .. slice_index .. " (hex_key: " .. hex_key .. ") in current instrument " .. current_instrument_index)
+        end
+    end
+    
+    print("DEBUG: Applied " .. labels_applied_count .. " labels to range symbol")
+    return applied_labels
+end
+
 -- Create symbol data structure for range-captured notes
 function selection.create_symbol_data(notes, selection_data)
     local song = renoise.song()
@@ -297,12 +368,15 @@ function selection.capture_selection_as_symbol()
     -- Convert to break_set format for compatibility
     local break_set = selection.convert_to_break_set(symbol_data)
     
+    -- NEW: Apply labels from current instrument's BreakFast labeler data
+    local applied_labels = selection.apply_labels_to_range_symbol(symbol_data, notes)
+    
     -- Store in global registry
     local global_registry = get_global_symbol_registry()
     global_registry[new_symbol] = {
         symbol_type = "range_captured", -- NEW: Distinguish from breakpoint symbols
         break_set = break_set,
-        saved_labels = {}, -- Empty for range-captured symbols
+        saved_labels = applied_labels, -- NEW: Apply mapped labels instead of empty table
         source_metadata = { -- NEW: Additional metadata for range symbols
             pattern_index = symbol_data.pattern_index,
             track_index = symbol_data.track_index,
@@ -313,8 +387,13 @@ function selection.capture_selection_as_symbol()
     -- Save to preferences
     save_global_symbol_registry()
     
-    local message = string.format("Captured selection as symbol %s (%d notes from pattern %d, track %d)", 
-        new_symbol, #notes, symbol_data.pattern_index, symbol_data.track_index)
+    local labels_count = 0
+    for _ in pairs(applied_labels) do
+        labels_count = labels_count + 1
+    end
+    
+    local message = string.format("Captured selection as symbol %s (%d notes from pattern %d, track %d, %d labels applied)", 
+        new_symbol, #notes, symbol_data.pattern_index, symbol_data.track_index, labels_count)
     renoise.app():show_status(message)
     print("DEBUG: " .. message)
     
@@ -378,12 +457,34 @@ function selection.format_range_symbol_labels(symbol_data)
             -- Use source_instrument_index - 1 to show the 0-based instrument number as it appears in the pattern
             local inst_str = string.format("I%02X", (timing.source_instrument_index or 1) - 1)
             
+            -- NEW: Get label from saved_labels if available
+            local label_str = ""
+            if symbol_data.saved_labels then
+                -- For range symbols, calculate the slice index from note value (same logic as apply_labels_to_range_symbol)
+                local note_value = timing.note_value
+                local slice_index = 0
+                if note_value >= 37 then
+                    slice_index = note_value - 36
+                end
+                local hex_key = string.format("%02X", slice_index + 1)
+                
+                local label_data = symbol_data.saved_labels[hex_key]
+                if label_data and label_data.label and label_data.label ~= "" then
+                    -- Pad label to consistent width for display
+                    label_str = string.format("%-5s", label_data.label:sub(1, 5))
+                else
+                    label_str = "_____"
+                end
+            else
+                label_str = "_____"
+            end
+            
             -- Add source info for range symbols
             local source_pattern = symbol_data.source_metadata and symbol_data.source_metadata.pattern_index or "??"
             local source_track = symbol_data.source_metadata and symbol_data.source_metadata.track_index or "??"
             local source_str = string.format("P%02X:T%02X", source_pattern - 1, source_track - 1)
             
-            local formatted_label = string.format("%s-%s-%s-%s-%s", line_str, note_str, delay_str, inst_str, source_str)
+            local formatted_label = string.format("%s-%s-%s-%s-%s", line_str, label_str, delay_str, inst_str, source_str)
             table.insert(labels, formatted_label)
         end
     end
