@@ -1001,9 +1001,9 @@ function export_global_alphabet_csv()
         return
     end
     
-    -- Write CSV header - expanded to include symbol type, range capture metadata, tags, and color
-    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
-    
+    -- Write CSV header - expanded to include symbol type, range capture metadata, tags, color, Vol/Pan/FX, and all 12 note columns
+    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
+
     -- Write data for each symbol
     for symbol, symbol_data in pairs(global_symbol_registry) do
         local instrument_index = symbol_data.instrument_index or 1
@@ -1091,6 +1091,51 @@ function export_global_alphabet_csv()
                     actual_instrument_value = (timing.source_instrument_index - 1)
                 end
                 
+                -- Extract all 8 effect columns data
+                local effect_columns_data = {}
+                if timing.effect_columns then
+                    for fx_col = 1, 8 do
+                        if timing.effect_columns[fx_col] then
+                            table.insert(effect_columns_data, timing.effect_columns[fx_col].number_value or "")
+                            table.insert(effect_columns_data, timing.effect_columns[fx_col].amount_value or "")
+                        else
+                            table.insert(effect_columns_data, "")  -- Empty number value
+                            table.insert(effect_columns_data, "")  -- Empty amount value
+                        end
+                    end
+                else
+                    -- No effect columns data, add 16 empty fields (8 columns × 2 values each)
+                    for fx_col = 1, 16 do
+                        table.insert(effect_columns_data, "")
+                    end
+                end
+
+                -- Extract all 12 note columns data
+                local note_columns_data = {}
+                if timing.note_columns then
+                    for note_col = 1, 12 do
+                        if timing.note_columns[note_col] then
+                            table.insert(note_columns_data, timing.note_columns[note_col].note_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].instrument_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].volume_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].panning_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].delay_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].effect_number_value or "")
+                            table.insert(note_columns_data, timing.note_columns[note_col].effect_amount_value or "")
+                        else
+                            -- Add 7 empty fields for this note column (note, instrument, volume, panning, delay, effect_number, effect_amount)
+                            for field = 1, 7 do
+                                table.insert(note_columns_data, "")
+                            end
+                        end
+                    end
+                else
+                    -- No note columns data, add 84 empty fields (12 columns × 7 values each)
+                    for note_col = 1, 84 do
+                        table.insert(note_columns_data, "")
+                    end
+                end
+
                 local values = {
                     symbol or "",
                     symbol_type or "",
@@ -1104,11 +1149,27 @@ function export_global_alphabet_csv()
                     timing.new_delay or "",
                     timing.original_distance or "",
                     note_value or "",
-                    source_pattern,
-                    source_track,
-                    capture_start_line,
-                    capture_end_line
+                    timing.volume_value or "",
+                    timing.panning_value or "",
+                    timing.effect_number_value or "",
+                    timing.effect_amount_value or ""
                 }
+                
+                -- Add all effect columns data
+                for _, fx_data in ipairs(effect_columns_data) do
+                    table.insert(values, fx_data)
+                end
+                
+                -- Add all note columns data
+                for _, note_data in ipairs(note_columns_data) do
+                    table.insert(values, note_data)
+                end
+                
+                -- Add remaining fields
+                table.insert(values, source_pattern)
+                table.insert(values, source_track)
+                table.insert(values, capture_start_line)
+                table.insert(values, capture_end_line)       
                 
                 -- Ensure all values are properly escaped
                 for i, value in ipairs(values) do
@@ -1214,11 +1275,16 @@ function export_global_alphabet_json()
                 if timing.panning_value then
                     note_entry.panning_value = timing.panning_value
                 end
-                if timing.effect_number then
-                    note_entry.effect_number = timing.effect_number
+                if timing.effect_number_value then
+                    note_entry.effect_number_value = timing.effect_number_value
                 end
-                if timing.effect_amount then
-                    note_entry.effect_amount = timing.effect_amount
+                if timing.effect_amount_value then
+                    note_entry.effect_amount_value = timing.effect_amount_value
+                end
+                
+                -- Add note columns data if available
+                if timing.note_columns then
+                    note_entry.note_columns = timing.note_columns
                 end
                 
                 table.insert(symbol_entry.notes, note_entry)
@@ -1233,8 +1299,10 @@ function export_global_alphabet_json()
                     note_value = timing.note_value,
                     volume_value = timing.volume_value,
                     panning_value = timing.panning_value,
-                    effect_number = timing.effect_number,
-                    effect_amount = timing.effect_amount
+                    effect_number_value = timing.effect_number_value,
+                    effect_amount_value = timing.effect_amount_value,
+                    effect_columns = timing.effect_columns or {},
+                    note_columns = timing.note_columns or {}
                 })
             end
         end
@@ -1365,10 +1433,27 @@ function import_global_alphabet_csv()
     local header_fields = parse_csv_line(header)
     local column_positions = {}
     
-    -- Updated expected columns to include new fields
+    -- Updated expected columns to include new fields, all 8 effect columns, and all 12 note columns
     local expected_columns = {
         "symbol", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
-        "timingline", "timingdelay", "originaldistance", "notevalue",
+        "timingline", "timingdelay", "originaldistance", "notevalue", "volumevalue", "panningvalue", 
+        "effectnumber", "effectamount", 
+        "effectcolumn1number", "effectcolumn1amount", "effectcolumn2number", "effectcolumn2amount",
+        "effectcolumn3number", "effectcolumn3amount", "effectcolumn4number", "effectcolumn4amount",
+        "effectcolumn5number", "effectcolumn5amount", "effectcolumn6number", "effectcolumn6amount",
+        "effectcolumn7number", "effectcolumn7amount", "effectcolumn8number", "effectcolumn8amount",
+        "notecolumn1note", "notecolumn1instrument", "notecolumn1volume", "notecolumn1panning", "notecolumn1delay", "notecolumn1effectnumber", "notecolumn1effectamount",
+        "notecolumn2note", "notecolumn2instrument", "notecolumn2volume", "notecolumn2panning", "notecolumn2delay", "notecolumn2effectnumber", "notecolumn2effectamount",
+        "notecolumn3note", "notecolumn3instrument", "notecolumn3volume", "notecolumn3panning", "notecolumn3delay", "notecolumn3effectnumber", "notecolumn3effectamount",
+        "notecolumn4note", "notecolumn4instrument", "notecolumn4volume", "notecolumn4panning", "notecolumn4delay", "notecolumn4effectnumber", "notecolumn4effectamount",
+        "notecolumn5note", "notecolumn5instrument", "notecolumn5volume", "notecolumn5panning", "notecolumn5delay", "notecolumn5effectnumber", "notecolumn5effectamount",
+        "notecolumn6note", "notecolumn6instrument", "notecolumn6volume", "notecolumn6panning", "notecolumn6delay", "notecolumn6effectnumber", "notecolumn6effectamount",
+        "notecolumn7note", "notecolumn7instrument", "notecolumn7volume", "notecolumn7panning", "notecolumn7delay", "notecolumn7effectnumber", "notecolumn7effectamount",
+        "notecolumn8note", "notecolumn8instrument", "notecolumn8volume", "notecolumn8panning", "notecolumn8delay", "notecolumn8effectnumber", "notecolumn8effectamount",
+        "notecolumn9note", "notecolumn9instrument", "notecolumn9volume", "notecolumn9panning", "notecolumn9delay", "notecolumn9effectnumber", "notecolumn9effectamount",
+        "notecolumn10note", "notecolumn10instrument", "notecolumn10volume", "notecolumn10panning", "notecolumn10delay", "notecolumn10effectnumber", "notecolumn10effectamount",
+        "notecolumn11note", "notecolumn11instrument", "notecolumn11volume", "notecolumn11panning", "notecolumn11delay", "notecolumn11effectnumber", "notecolumn11effectamount",
+        "notecolumn12note", "notecolumn12instrument", "notecolumn12volume", "notecolumn12panning", "notecolumn12delay", "notecolumn12effectnumber", "notecolumn12effectamount",
         "sourcepattern", "sourcetrack", "capturestartline", "captureendline"
     }
     
@@ -1434,6 +1519,52 @@ function import_global_alphabet_csv()
                 local note_value = nil
                 if column_positions.notevalue and fields[column_positions.notevalue] and fields[column_positions.notevalue] ~= "" then
                     note_value = tonumber(unescape_csv_field(fields[column_positions.notevalue]))
+                end
+                
+                local volume_value = nil
+                if column_positions.volumevalue and fields[column_positions.volumevalue] and fields[column_positions.volumevalue] ~= "" then
+                    volume_value = tonumber(unescape_csv_field(fields[column_positions.volumevalue]))
+                end
+                
+                local panning_value = nil
+                if column_positions.panningvalue and fields[column_positions.panningvalue] and fields[column_positions.panningvalue] ~= "" then
+                    panning_value = tonumber(unescape_csv_field(fields[column_positions.panningvalue]))
+                end
+                
+                local effect_number_value = nil
+                if column_positions.effectnumber and fields[column_positions.effectnumber] and fields[column_positions.effectnumber] ~= "" then
+                    effect_number_value = tonumber(unescape_csv_field(fields[column_positions.effectnumber]))
+                end
+                
+                local effect_amount_value = nil
+                if column_positions.effectamount and fields[column_positions.effectamount] and fields[column_positions.effectamount] ~= "" then
+                    effect_amount_value = tonumber(unescape_csv_field(fields[column_positions.effectamount]))
+                end
+                
+                -- Extract all 8 effect columns data
+                local effect_columns_data = {}
+                for fx_col = 1, 8 do
+                    local number_key = "effectcolumn" .. fx_col .. "number"
+                    local amount_key = "effectcolumn" .. fx_col .. "amount"
+                    
+                    local fx_number = nil
+                    local fx_amount = nil
+                    
+                    if column_positions[number_key] and fields[column_positions[number_key]] and fields[column_positions[number_key]] ~= "" then
+                        fx_number = tonumber(unescape_csv_field(fields[column_positions[number_key]]))
+                    end
+                    
+                    if column_positions[amount_key] and fields[column_positions[amount_key]] and fields[column_positions[amount_key]] ~= "" then
+                        fx_amount = tonumber(unescape_csv_field(fields[column_positions[amount_key]]))
+                    end
+                    
+                    -- Only store effect column data if we have valid values
+                    if fx_number or fx_amount then
+                        effect_columns_data[fx_col] = {
+                            number_value = fx_number,
+                            amount_value = fx_amount
+                        }
+                    end
                 end
                 
                 -- Extract range capture metadata
@@ -1513,6 +1644,85 @@ function import_global_alphabet_csv()
                     -- Add note_value for range-captured symbols
                     if note_value then
                         timing_entry.note_value = note_value
+                    end
+                    
+                    -- Add Vol/Pan/FX values if present
+                    if volume_value then
+                        timing_entry.volume_value = volume_value
+                    end
+                    if panning_value then
+                        timing_entry.panning_value = panning_value
+                    end
+                    if effect_number_value then
+                        timing_entry.effect_number_value = effect_number_value
+                    end
+                    if effect_amount_value then
+                        timing_entry.effect_amount_value = effect_amount_value
+                    end
+                    
+                    -- Add effect columns data if present
+                    if next(effect_columns_data) ~= nil then
+                        timing_entry.effect_columns = effect_columns_data
+                    end
+                    
+                    -- Extract all 12 note columns data
+                    local note_columns_data = {}
+                    for note_col = 1, 12 do
+                        local note_key = "notecolumn" .. note_col .. "note"
+                        local instrument_key = "notecolumn" .. note_col .. "instrument"
+                        local volume_key = "notecolumn" .. note_col .. "volume"
+                        local panning_key = "notecolumn" .. note_col .. "panning"
+                        local delay_key = "notecolumn" .. note_col .. "delay"
+                        local effect_number_key = "notecolumn" .. note_col .. "effectnumber"
+                        local effect_amount_key = "notecolumn" .. note_col .. "effectamount"
+                        
+                        local note_val = nil
+                        local instrument_val = nil
+                        local volume_val = nil
+                        local panning_val = nil
+                        local delay_val = nil
+                        local effect_number_val = nil
+                        local effect_amount_val = nil
+                        
+                        if column_positions[note_key] and fields[column_positions[note_key]] and fields[column_positions[note_key]] ~= "" then
+                            note_val = tonumber(unescape_csv_field(fields[column_positions[note_key]]))
+                        end
+                        if column_positions[instrument_key] and fields[column_positions[instrument_key]] and fields[column_positions[instrument_key]] ~= "" then
+                            instrument_val = tonumber(unescape_csv_field(fields[column_positions[instrument_key]]))
+                        end
+                        if column_positions[volume_key] and fields[column_positions[volume_key]] and fields[column_positions[volume_key]] ~= "" then
+                            volume_val = tonumber(unescape_csv_field(fields[column_positions[volume_key]]))
+                        end
+                        if column_positions[panning_key] and fields[column_positions[panning_key]] and fields[column_positions[panning_key]] ~= "" then
+                            panning_val = tonumber(unescape_csv_field(fields[column_positions[panning_key]]))
+                        end
+                        if column_positions[delay_key] and fields[column_positions[delay_key]] and fields[column_positions[delay_key]] ~= "" then
+                            delay_val = tonumber(unescape_csv_field(fields[column_positions[delay_key]]))
+                        end
+                        if column_positions[effect_number_key] and fields[column_positions[effect_number_key]] and fields[column_positions[effect_number_key]] ~= "" then
+                            effect_number_val = tonumber(unescape_csv_field(fields[column_positions[effect_number_key]]))
+                        end
+                        if column_positions[effect_amount_key] and fields[column_positions[effect_amount_key]] and fields[column_positions[effect_amount_key]] ~= "" then
+                            effect_amount_val = tonumber(unescape_csv_field(fields[column_positions[effect_amount_key]]))
+                        end
+                        
+                        -- Only store note column data if we have valid values
+                        if note_val or instrument_val or volume_val or panning_val or delay_val or effect_number_val or effect_amount_val then
+                            note_columns_data[note_col] = {
+                                note_value = note_val,
+                                instrument_value = instrument_val,
+                                volume_value = volume_val,
+                                panning_value = panning_val,
+                                delay_value = delay_val,
+                                effect_number_value = effect_number_val,
+                                effect_amount_value = effect_amount_val
+                            }
+                        end
+                    end
+                    
+                    -- Add note columns data if present
+                    if next(note_columns_data) ~= nil then
+                        timing_entry.note_columns = note_columns_data
                     end
                     
                     table.insert(imported_symbols[symbol].timing_data, timing_entry)
@@ -1765,11 +1975,17 @@ function import_global_alphabet_json()
                             if entry.panning_value then
                                 timing_entry.panning_value = entry.panning_value
                             end
-                            if entry.effect_number then
-                                timing_entry.effect_number = entry.effect_number
+                            if entry.effect_number_value then
+                                timing_entry.effect_number_value = entry.effect_number_value
                             end
-                            if entry.effect_amount then
-                                timing_entry.effect_amount = entry.effect_amount
+                            if entry.effect_amount_value then
+                                timing_entry.effect_amount_value = entry.effect_amount_value
+                            end
+                            if entry.effect_columns then
+                                timing_entry.effect_columns = entry.effect_columns
+                            end
+                            if entry.note_columns then
+                                timing_entry.note_columns = entry.note_columns
                             end
                             
                             table.insert(timing_data, timing_entry)
@@ -1788,6 +2004,11 @@ function import_global_alphabet_json()
                                 note_entry.note_value = note_value
                             else
                                 note_entry.note_value = 48  -- C-4 default for breakpoint symbols
+                            end
+                            
+                            -- Add note columns data if available
+                            if entry.note_columns then
+                                note_entry.note_columns = entry.note_columns
                             end
                             
                             table.insert(notes, note_entry)

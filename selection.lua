@@ -60,7 +60,7 @@ function selection.extract_notes_from_selection()
     -- Extract all notes within the selection range
     for line_idx = selection_data.start_line, selection_data.end_line do
         local line = track:line(line_idx)
-        local note_column = line:note_column(1) -- Focus on first note column for now
+        local note_column = line:note_column(1) -- Focus on first note column for primary data
         
         if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
             has_notes = true
@@ -91,10 +91,41 @@ function selection.extract_notes_from_selection()
                     volume_value = note_column.volume_value,
                     panning_value = note_column.panning_value,
                     delay_value = note_column.delay_value,
-                    effect_number = note_column.effect_number_value,
-                    effect_amount = note_column.effect_amount_value,
+                    effect_number_value = note_column.effect_number_value,
+                    effect_amount_value = note_column.effect_amount_value,
                     distance_to_next = 0 -- Will be calculated in next step
                 }
+                
+                -- Capture all 12 note columns for this line
+                note_data.note_columns = {}
+                for note_col = 1, 12 do
+                    local note_column_data = line:note_column(note_col)
+                    if note_column_data then
+                        -- Always capture note column data, even if empty (for complete data preservation)
+                        note_data.note_columns[note_col] = {
+                            note_value = note_column_data.note_value,
+                            instrument_value = note_column_data.instrument_value,
+                            volume_value = note_column_data.volume_value,
+                            panning_value = note_column_data.panning_value,
+                            delay_value = note_column_data.delay_value,
+                            effect_number_value = note_column_data.effect_number_value,
+                            effect_amount_value = note_column_data.effect_amount_value
+                        }
+                    end
+                end
+                
+                -- Capture all 8 effect columns for this line
+                note_data.effect_columns = {}
+                for fx_col = 1, 8 do
+                    local effect_column = line:effect_column(fx_col)
+                    if effect_column then
+                        -- Always capture effect column data, even if empty (for complete data preservation)
+                        note_data.effect_columns[fx_col] = {
+                            number_value = effect_column.number_value,
+                            amount_value = effect_column.amount_value
+                        }
+                    end
+                end
                 
                 table.insert(notes, note_data)
                 print("DEBUG: Extracted note at line " .. line_idx .. " (relative " .. relative_line .. "): " .. 
@@ -309,8 +340,10 @@ function selection.convert_to_break_set(symbol_data)
             note_value = valid_note_value,
             volume_value = note.volume_value,
             panning_value = note.panning_value,
-            effect_number = note.effect_number,
-            effect_amount = note.effect_amount
+            effect_number_value = note.effect_number_value,
+            effect_amount_value = note.effect_amount_value,
+            effect_columns = note.effect_columns or {},
+            note_columns = note.note_columns or {}
         }
         table.insert(break_set.timing, timing_entry)
         
@@ -320,6 +353,12 @@ function selection.convert_to_break_set(symbol_data)
             note_value = valid_note_value,
             instrument_value = valid_instrument_value,
             delay_value = note.delay_value,
+            volume_value = note.volume_value,
+            panning_value = note.panning_value,
+            effect_number_value = note.effect_number_value,
+            effect_amount_value = note.effect_amount_value,
+            effect_columns = note.effect_columns or {},
+            note_columns = note.note_columns or {},
             distance = note.distance_to_next,
             is_last = (i == #symbol_data.notes)
         }
@@ -457,7 +496,7 @@ function selection.format_range_symbol_labels(symbol_data)
             -- Use source_instrument_index - 1 to show the 0-based instrument number as it appears in the pattern
             local inst_str = string.format("I%02X", (timing.source_instrument_index or 1) - 1)
             
-            -- NEW: Get label from saved_labels if available
+            -- Get label from saved_labels if available, otherwise use note value
             local label_str = ""
             if symbol_data.saved_labels then
                 -- For range symbols, calculate the slice index from note value (same logic as apply_labels_to_range_symbol)
@@ -473,10 +512,12 @@ function selection.format_range_symbol_labels(symbol_data)
                     -- Pad label to consistent width for display
                     label_str = string.format("%-5s", label_data.label:sub(1, 5))
                 else
-                    label_str = "_____"
+                    -- Use note value instead of underscores when no label exists
+                    label_str = string.format("%-5s", note_str:sub(1, 5))
                 end
             else
-                label_str = "_____"
+                -- Use note value when no saved_labels available
+                label_str = string.format("%-5s", note_str:sub(1, 5))
             end
             
             -- Add source info for range symbols

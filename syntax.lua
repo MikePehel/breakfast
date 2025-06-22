@@ -55,18 +55,41 @@ local function parse_csv_line(line)
     return fields
 end
 
+-- Convert note value to string representation
+function syntax.note_value_to_string(note_value)
+    if note_value == 120 then return "OFF"
+    elseif note_value == 121 then return "---"
+    else
+        local octave = math.floor(note_value / 12) - 2
+        local note_names = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"}
+        local note_index = (note_value % 12) + 1
+        return string.format("%s%d", note_names[note_index], octave)
+    end
+end
+
 -- Format a single break label with instrument information
-function syntax.format_break_label(note, label, source_instrument_index)
+function syntax.format_break_label(note, label, source_instrument_index, note_value)
     -- Ensure we have a valid instrument index (fallback to 1 if not provided)
     local actual_instrument_index = source_instrument_index or 1
     local instrument_index = actual_instrument_index - 1  -- Convert to 0-based for display
     
     local line_str = string.format("%02d", note.line)
-    local padded_label = pad_with_underscores(label or "", 5)
+    
+    -- Use note value if no label is provided
+    local display_label
+    if label and label ~= "" then
+        display_label = pad_with_underscores(label, 5)
+    else
+        -- Calculate note value if not provided (for breakpoint symbols)
+        local actual_note_value = note_value or (36 + (note.instrument_value or 0))
+        local note_str = syntax.note_value_to_string(actual_note_value)
+        display_label = pad_with_underscores(note_str, 5)
+    end
+    
     local delay_str = string.format("d%02X", note.delay_value or 0)
     local instrument_str = string.format("I%02X", instrument_index)
     
-    return string.format("%s-%s-%s-%s", line_str, padded_label, delay_str, instrument_str)
+    return string.format("%s-%s-%s-%s", line_str, display_label, delay_str, instrument_str)
 end
 
 -- Parse break string into permutation array
@@ -168,7 +191,9 @@ function syntax.prepare_symbol_labels(sets, saved_labels)
                 local label = saved_labels[hex_key] and saved_labels[hex_key].label or ""
                 -- Get source instrument index from the first timing entry of this set
                 local source_instrument_index = set.timing and set.timing[1] and set.timing[1].source_instrument_index or 1
-                table.insert(symbol_labels[symbols[i]], syntax.format_break_label(note, label, source_instrument_index))
+                -- Calculate note value for breakpoint symbols
+                local note_value = 36 + note.instrument_value
+                table.insert(symbol_labels[symbols[i]], syntax.format_break_label(note, label, source_instrument_index, note_value))
             end
         end
     end
@@ -217,6 +242,49 @@ local function format_range_symbol_label(timing, saved_labels)
     return string.format("%s-%s-%s-%s", line_str, label_str, delay_str, inst_str)
 end
 
+-- Helper function to format range symbol labels (same logic as selection.lua)
+local function format_range_symbol_label(timing, saved_labels)
+    local line_str = string.format("%02d", timing.relative_line)
+    local note_str = ""
+    if timing.note_value == 120 then 
+        note_str = "OFF"
+    elseif timing.note_value == 121 then 
+        note_str = "---"
+    else
+        local octave = math.floor(timing.note_value / 12) - 2
+        local note_names = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"}
+        local note_index = (timing.note_value % 12) + 1
+        note_str = string.format("%s%d", note_names[note_index], octave)
+    end
+    local delay_str = string.format("d%02X", timing.new_delay)
+    local inst_str = string.format("I%02X", (timing.source_instrument_index or 1) - 1)
+    
+    -- Get label from saved_labels if available, otherwise use note value
+    local label_str = ""
+    if saved_labels then
+        -- Calculate slice index from note value (same as apply_labels_to_range_symbol)
+        local note_value = timing.note_value
+        local slice_index = 0
+        if note_value >= 37 then
+            slice_index = note_value - 36
+        end
+        local hex_key = string.format("%02X", slice_index + 1)
+        
+        local label_data = saved_labels[hex_key]
+        if label_data and label_data.label and label_data.label ~= "" then
+            label_str = pad_with_underscores(label_data.label, 5)
+        else
+            -- Use note value instead of underscores when no label exists
+            label_str = pad_with_underscores(note_str, 5)
+        end
+    else
+        -- Use note value when no saved_labels available
+        label_str = pad_with_underscores(note_str, 5)
+    end
+    
+    return string.format("%s-%s-%s-%s", line_str, label_str, delay_str, inst_str)
+end
+
 -- Prepare formatted labels from global symbol registry
 function syntax.prepare_global_symbol_labels(global_registry)
     local symbol_labels = {}
@@ -254,7 +322,9 @@ function syntax.prepare_global_symbol_labels(global_registry)
                     
                     -- Use the instrument index from the symbol data
                     local source_instrument_index = symbol_data.instrument_index
-                    table.insert(symbol_labels[symbol], syntax.format_break_label(note, label, source_instrument_index))
+                    -- Calculate note value for breakpoint symbols
+                    local note_value = 36 + note.instrument_value
+                    table.insert(symbol_labels[symbol], syntax.format_break_label(note, label, source_instrument_index, note_value))
                 end
             end
         end

@@ -20,6 +20,12 @@ local function calculate_set_distances(set, analysis, source_instrument_index)
             new_distance = first_note.distance + delay_adjustment,
             note_value = first_note.note_value,
             instrument_value = first_note.instrument_value,
+            volume_value = first_note.volume_value,
+            panning_value = first_note.panning_value,
+            effect_number_value = first_note.effect_number_value,
+            effect_amount_value = first_note.effect_amount_value,
+            effect_columns = first_note.effect_columns or {},
+            note_columns = first_note.note_columns or {},
             source_instrument_index = source_instrument_index or renoise.song().selected_instrument_index
         }
         
@@ -44,6 +50,12 @@ local function calculate_set_distances(set, analysis, source_instrument_index)
                 new_distance = current_note.distance + delay_adjustment,
                 note_value = current_note.note_value,
                 instrument_value = current_note.instrument_value,
+                volume_value = current_note.volume_value,
+                panning_value = current_note.panning_value,
+                effect_number_value = current_note.effect_number_value,
+                effect_amount_value = current_note.effect_amount_value,
+                effect_columns = current_note.effect_columns or {},
+                note_columns = current_note.note_columns or {},
                 source_instrument_index = source_instrument_index or renoise.song().selected_instrument_index
             }
         end
@@ -115,9 +127,45 @@ local function get_line_analysis(phrase)
             note_value = note_column.note_value,
             instrument_value = note_column.instrument_value,
             delay_value = note_column.delay_value,
+            volume_value = note_column.volume_value,
+            panning_value = note_column.panning_value,
+            effect_number_value = note_column.effect_number_value,
+            effect_amount_value = note_column.effect_amount_value,
             distance = 0,
             is_last = false
         }
+        
+        -- Capture all 12 note columns for this line
+        analysis[i].note_columns = {}
+        for note_col = 1, 12 do
+            local note_column_data = line:note_column(note_col)
+            if note_column_data then
+                -- Always capture note column data, even if empty (for complete data preservation)
+                analysis[i].note_columns[note_col] = {
+                    note_value = note_column_data.note_value,
+                    instrument_value = note_column_data.instrument_value,
+                    delay_value = note_column_data.delay_value,
+                    volume_value = note_column_data.volume_value,
+                    panning_value = note_column_data.panning_value,
+                    effect_number_value = note_column_data.effect_number_value,
+                    effect_amount_value = note_column_data.effect_amount_value
+                }
+            end
+        end
+        
+        -- Capture all 8 effect columns for this line
+        analysis[i].effect_columns = {}
+        local line = phrase:line(i)
+        for fx_col = 1, 8 do
+            local effect_column = line:effect_column(fx_col)
+            if effect_column then
+                -- Always capture effect column data, even if empty (for complete data preservation)
+                analysis[i].effect_columns[fx_col] = {
+                    number_value = effect_column.number_value,
+                    amount_value = effect_column.amount_value
+                }
+            end
+        end
         
         -- DEBUG: Show every line with data
         if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
@@ -261,6 +309,12 @@ function breakpoints.create_break_patterns(instrument, original_phrase, saved_la
                     note_value = analysis[line].note_value,
                     instrument_value = analysis[line].instrument_value,
                     delay_value = analysis[line].delay_value,
+                    volume_value = analysis[line].volume_value,
+                    panning_value = analysis[line].panning_value,
+                    effect_number_value = analysis[line].effect_number_value,
+                    effect_amount_value = analysis[line].effect_amount_value,
+                    effect_columns = analysis[line].effect_columns or {},
+                    note_columns = analysis[line].note_columns or {},
                     distance = analysis[line].distance,
                     is_last = analysis[line].is_last
                 })
