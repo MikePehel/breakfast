@@ -1454,20 +1454,66 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
     local start_line = placement_info.original_start_line
     print("DEBUG: Exclude using original cursor position: " .. (start_line or "unknown"))
     
+    -- Helper function to check if a line has any meaningful content across all columns
+    local function line_has_meaningful_content(line)
+        -- Check all 12 note columns for any content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                return true
+            end
+        end
+        
+        -- Check all 8 effect columns for any content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                return true
+            end
+        end
+        
+        return false
+    end
+    
+    -- Helper function to clear all meaningful content from a line
+    local function clear_line_content(line)
+        local cleared_count = 0
+        
+        -- Clear all note columns that have content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                note_column:clear()
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        -- Clear all effect columns that have content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                effect_column.number_value = 0
+                effect_column.amount_value = 0
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        return cleared_count
+    end
+    
     -- First pass: identify conflicts and track what to clear/skip
     -- Use the actual final line positions (post-overflow)
-    local conflicts = {} -- lines where both new and existing notes exist
-    local cleared_notes = 0
+    local conflicts = {} -- lines where both new and existing content exist
+    local cleared_items = 0
     local skipped_notes = 0
     
     for _, note in ipairs(placement_info.notes) do
         -- Ensure line is within pattern bounds (should be after overflow handling)
         if note.line >= 1 and note.line <= pattern.number_of_lines then
             local line = track:line(note.line)
-            local first_column = line:note_column(1)
             
-            -- Check if there's an existing note that would conflict
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            -- Check if there's existing content that would conflict
+            if line_has_meaningful_content(line) then
                 conflicts[note.line] = true
                 print("DEBUG: Exclude found conflict at line " .. note.line)
             end
@@ -1476,13 +1522,11 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
         end
     end
     
-    -- Second pass: clear existing notes on conflicting lines
+    -- Second pass: clear existing content on conflicting lines
     for line_num, _ in pairs(conflicts) do
         local line = track:line(line_num)
-        local first_column = line:note_column(1)
-        print("DEBUG: Exclude clearing existing note at line " .. line_num)
-        first_column:clear()
-        cleared_notes = cleared_notes + 1
+        print("DEBUG: Exclude clearing existing content at line " .. line_num)
+        cleared_items = cleared_items + clear_line_content(line)
     end
     
     -- Third pass: filter out new notes that would conflict
@@ -1509,9 +1553,9 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
     placement_info.notes = excluded_notes
     
     -- Show exclude message
-    if cleared_notes > 0 or skipped_notes > 0 then
-        local message = string.format("Exclude: %d existing notes cleared, %d new notes skipped, %d notes placed", 
-            cleared_notes, skipped_notes, #excluded_notes)
+    if cleared_items > 0 or skipped_notes > 0 then
+        local message = string.format("Exclude: %d existing content items cleared, %d new notes skipped, %d notes placed", 
+            cleared_items, skipped_notes, #excluded_notes)
         renoise.app():show_status(message)
         print("DEBUG: " .. message)
     end
@@ -1638,6 +1682,53 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         print("DEBUG: Intersect behavior (last resort) - range ends at line " .. end_line)
     end
     
+    -- Helper function to check if a line has any meaningful content across all columns
+    local function line_has_meaningful_content(line)
+        -- Check all 12 note columns for any content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                return true
+            end
+        end
+        
+        -- Check all 8 effect columns for any content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                return true
+            end
+        end
+        
+        return false
+    end
+    
+    -- Helper function to clear all meaningful content from a line
+    local function clear_line_content(line)
+        local cleared_count = 0
+        
+        -- Clear all note columns that have content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                note_column:clear()
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        -- Clear all effect columns that have content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                effect_column.number_value = 0
+                effect_column.amount_value = 0
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        return cleared_count
+    end
+    
     -- Handle different scenarios based on overflow behavior and range
     if is_truncate_mode then
         -- Truncate mode: Process only within pattern boundaries, no wraparound
@@ -1651,24 +1742,21 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line)
                 end
             end
         end
         
-        -- Clear non-conflicting existing notes within the range
+        -- Clear non-conflicting existing content within the range
         local cleared_notes = 0
         for line_num = start_line, end_line do
             local line = track:line(line_num)
-            local first_column = line:note_column(1)
             
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                first_column:clear()
-                cleared_notes = cleared_notes + 1
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+                cleared_notes = cleared_notes + clear_line_content(line)
             end
         end
         
@@ -1692,7 +1780,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         placement_info.notes = intersected_notes
         
         if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (truncate) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
+            print("DEBUG: Intersect (truncate) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
         end
         
     elseif original_end_line and original_end_line > pattern.number_of_lines then
@@ -1710,9 +1798,8 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= pattern.number_of_lines then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line .. " (original range)")
                 end
@@ -1724,16 +1811,15 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= 1 and note.line <= wrapped_end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     wrapped_conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line .. " (wrapped range)")
                 end
             end
         end
         
-        -- Clear non-conflicting notes in original range
+        -- Clear non-conflicting content in original range
         local cleared_notes = 0
         local cleared_original = 0
         local cleared_wrapped = 0
@@ -1743,38 +1829,30 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for line_num = start_line, pattern.number_of_lines do
             local line = track:line(line_num)
             
-            -- Clear ALL note columns for non-conflicting lines
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
-                    cleared_original = cleared_original + 1
-                end
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+                local cleared = clear_line_content(line)
+                cleared_notes = cleared_notes + cleared
+                cleared_original = cleared_original + cleared
             end
         end
         
-        -- Clear non-conflicting notes in wrapped range
+        -- Clear non-conflicting content in wrapped range
         for line_num = 1, wrapped_end_line do
             local line = track:line(line_num)
             
-            -- Clear ALL note columns for non-conflicting lines
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not wrapped_conflicts[line_num] then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
-                    cleared_wrapped = cleared_wrapped + 1
-                end
+            if line_has_meaningful_content(line) and not wrapped_conflicts[line_num] then
+                local cleared = clear_line_content(line)
+                cleared_notes = cleared_notes + cleared
+                cleared_wrapped = cleared_wrapped + cleared
             end
         end
         
         if cleared_notes > 0 then
-            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " non-conflicting notes: " .. 
+            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " non-conflicting content items: " .. 
                   cleared_original .. " from original range (lines " .. start_line .. "-" .. pattern.number_of_lines .. "), " ..
                   cleared_wrapped .. " from wrapped range (lines 1-" .. wrapped_end_line .. ")")
         else
-            print("DEBUG: Intersect (wraparound) - no non-conflicting notes found to clear")
+            print("DEBUG: Intersect (wraparound) - no non-conflicting content found to clear")
         end
         
         -- Filter new notes based on conflicts in both ranges
@@ -1800,7 +1878,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         placement_info.notes = intersected_notes
         
         if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
+            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
         end
         
     else
@@ -1815,53 +1893,50 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line)
                 end
             end
         end
         
-        -- Clear non-conflicting existing notes within the range
+        -- Clear non-conflicting existing content within the range
         local cleared_notes = 0
         for line_num = start_line, end_line do
             local line = track:line(line_num)
-            local first_column = line:note_column(1)
             
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                first_column:clear()
-                cleared_notes = cleared_notes + 1
-            end
-        end
-        
-        -- Filter new notes: place all if no conflicts, otherwise only conflicting ones
-        local has_any_conflicts = next(conflicts) ~= nil
-        local intersected_notes = {}
-        local skipped_notes = 0
-        
-        for _, note in ipairs(placement_info.notes) do
-            if note.line >= start_line and note.line <= end_line then
-                if not has_any_conflicts or conflicts[note.line] then
-                    table.insert(intersected_notes, note)
-                else
-                    skipped_notes = skipped_notes + 1
-                end
-            else
-                skipped_notes = skipped_notes + 1
-            end
-        end
-        
-        placement_info.notes = intersected_notes
-        
-        if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (normal) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
-        end
-    end
-    
-    return true
-end
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+               cleared_notes = cleared_notes + clear_line_content(line)
+           end
+       end
+       
+       -- Filter new notes: place all if no conflicts, otherwise only conflicting ones
+       local has_any_conflicts = next(conflicts) ~= nil
+       local intersected_notes = {}
+       local skipped_notes = 0
+       
+       for _, note in ipairs(placement_info.notes) do
+           if note.line >= start_line and note.line <= end_line then
+               if not has_any_conflicts or conflicts[note.line] then
+                   table.insert(intersected_notes, note)
+               else
+                   skipped_notes = skipped_notes + 1
+               end
+           else
+               skipped_notes = skipped_notes + 1
+           end
+       end
+       
+       placement_info.notes = intersected_notes
+       
+       if cleared_notes > 0 or skipped_notes > 0 then
+           print("DEBUG: Intersect (normal) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
+       end
+   end
+   
+   return true
+end                
 
 
 -- UPDATED: Place notes in the pattern (now with multi-column support and overflow handling)
@@ -1944,9 +2019,8 @@ function editor.place_notes_in_pattern(placement_info, track_index)
         local current_overwrite_behavior = get_overwrite_behavior()
         local overwrite_constants = get_overwrite_behavior_constants()
         use_sum_behavior = (current_overwrite_behavior == overwrite_constants.SUM or 
-                           current_overwrite_behavior == overwrite_constants.INTERSECT or
                            current_overwrite_behavior == overwrite_constants.REPLACE)
-        -- SUBSTITUTE and RETAIN use column-aware logic, EXCLUDE uses single-column logic
+        -- SUBSTITUTE and RETAIN use column-aware logic, EXCLUDE and INTERSECT use multi-column logic
     end
     
     -- UPDATED: Place each note with multi-column support
@@ -1978,7 +2052,7 @@ function editor.place_notes_in_pattern(placement_info, track_index)
                         table.insert(all_overflow_data, overflow_item)
                     end
                 elseif use_sum_behavior then
-                    -- Use multi-column placement for SUM, INTERSECT, REPLACE behaviors
+                    -- Use multi-column placement for SUM, REPLACE behaviors
                     local placed_columns, overflow_data = place_multi_column_note_data(line, note)
                     
                     -- Collect overflow data
@@ -1986,28 +2060,14 @@ function editor.place_notes_in_pattern(placement_info, track_index)
                         table.insert(all_overflow_data, overflow_item)
                     end
                 else
-                    -- Use original single-column logic for EXCLUDE behavior only
-                    local note_column = line:note_column(1)
+                    -- Use multi-column placement for EXCLUDE and INTERSECT behaviors
+                    -- These behaviors have already been processed by their handlers
+                    local placed_columns, overflow_data = place_multi_column_note_data(line, note)
                     
-                    -- This logic handles EXCLUDE behavior
-                    -- which has already been processed by its handler
-                    note_column.note_value = note.note_value
-                    
-                    -- Determine instrument value based on instrument source behavior
-                    local instrument_value
-                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                        local current_behavior = get_instrument_source_behavior()
-                        local behavior_constants = get_instrument_source_behavior_constants()
-                        if current_behavior == behavior_constants.CURRENT_SELECTED then
-                            instrument_value = renoise.song().selected_instrument_index - 1
-                        else
-                            instrument_value = (note.source_instrument_index or 1) - 1
-                        end
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
                     end
-                    note_column.instrument_value = instrument_value
-                    note_column.delay_value = note.delay
                 end
             else
                 -- Fallback: use multi-column placement
