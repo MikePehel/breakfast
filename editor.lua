@@ -870,6 +870,135 @@ local function create_overflow_track(song, current_track_index, overflow_data)
     return true, new_track_index
 end
 
+-- Handle column-aware placement for behaviors that work on a column-by-column basis
+local function place_column_aware_note_data(line, note_data, behavior_type)
+    local placed_columns = {}
+    local overflow_data = {}
+    
+    -- Behavior types: "substitute" or "retain"
+    local should_place_primary = true
+    local should_place_additional = true
+    
+    -- For substitute: place in column 1 regardless (substitute if occupied, place if empty)
+    -- For retain: only place in column 1 if it's empty
+    if behavior_type == "retain" then
+        local primary_column = line:note_column(1)
+        should_place_primary = (primary_column.note_value == renoise.PatternLine.EMPTY_NOTE)
+    end
+    
+    -- Place primary content in column 1 (if behavior allows)
+    if should_place_primary then
+        local note_column = line:note_column(1)
+        
+        -- Set note data if present, otherwise leave as empty note
+        if note_data.has_note then
+            note_column.note_value = note_data.note_value
+            
+            -- Determine instrument value based on instrument source behavior
+            local instrument_value
+            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                local current_behavior = get_instrument_source_behavior()
+                local behavior_constants = get_instrument_source_behavior_constants()
+                if current_behavior == behavior_constants.CURRENT_SELECTED then
+                    instrument_value = renoise.song().selected_instrument_index - 1
+                else
+                    instrument_value = (note_data.source_instrument_index or 1) - 1
+                end
+            else
+                instrument_value = (note_data.source_instrument_index or 1) - 1
+            end
+            note_column.instrument_value = instrument_value
+        end
+        
+        -- Always set volume, panning, delay, and effects (even for effect-only content)
+        if note_data.volume_value and note_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+            note_column.volume_value = note_data.volume_value
+        end
+        if note_data.panning_value and note_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+            note_column.panning_value = note_data.panning_value
+        end
+        note_column.delay_value = note_data.delay
+        if note_data.effect_number_value and note_data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            note_column.effect_number_value = note_data.effect_number_value
+        end
+        if note_data.effect_amount_value and note_data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+            note_column.effect_amount_value = note_data.effect_amount_value
+        end
+        
+        placed_columns[1] = 1
+        print("DEBUG: " .. behavior_type .. " placed primary content at column 1")
+    else
+        print("DEBUG: " .. behavior_type .. " skipped primary content (column 1 occupied)")
+    end
+    
+    -- Handle additional note columns from symbol (columns 2-12)
+    if note_data.note_columns then
+        for col_index = 2, 12 do
+            local note_col_data = note_data.note_columns[col_index]
+            if note_col_data and has_note_data(note_col_data) then
+                -- Check if we should place in this specific column
+                should_place_additional = true
+                
+                if behavior_type == "retain" and col_index <= #line.note_columns then
+                    local target_column = line:note_column(col_index)
+                    should_place_additional = (target_column.note_value == renoise.PatternLine.EMPTY_NOTE)
+                end
+                
+                if should_place_additional then
+                    -- Place in the corresponding column index if it exists
+                    if col_index <= #line.note_columns then
+                        local target_column = line:note_column(col_index)
+                        place_note_column_data(target_column, note_col_data, note_data)
+                        placed_columns[col_index] = col_index
+                        print("DEBUG: " .. behavior_type .. " placed note column " .. col_index .. " at column " .. col_index)
+                    else
+                        -- Column doesn't exist in track
+                        table.insert(overflow_data, {
+                            type = "note_column", 
+                            line = note_data.line,
+                            index = col_index, 
+                            data = note_col_data,
+                            primary_data = note_data
+                        })
+                        print("DEBUG: " .. behavior_type .. " note column " .. col_index .. " overflowed (column doesn't exist)")
+                    end
+                else
+                    print("DEBUG: " .. behavior_type .. " skipped note column " .. col_index .. " (column occupied)")
+                end
+            end
+        end
+    end
+    
+    -- Place effect columns - same logic for both behaviors
+    if note_data.effect_columns then
+        for fx_index = 1, 8 do
+            local fx_data = note_data.effect_columns[fx_index]
+            if fx_data and has_effect_data(fx_data) then
+                local should_place_effect = true
+                
+                if behavior_type == "retain" and fx_index <= #line.effect_columns then
+                    local effect_column = line:effect_column(fx_index)
+                    should_place_effect = (effect_column.number_value == 0 and effect_column.amount_value == 0)
+                end
+                
+                if should_place_effect then
+                    if fx_index <= #line.effect_columns then
+                        local effect_column = line:effect_column(fx_index)
+                        place_effect_data(effect_column, fx_data)
+                        print("DEBUG: " .. behavior_type .. " placed effect column " .. fx_index)
+                    else
+                        print("DEBUG: " .. behavior_type .. " effect column " .. fx_index .. " doesn't exist in track")
+                    end
+                else
+                    print("DEBUG: " .. behavior_type .. " skipped effect column " .. fx_index .. " (column occupied)")
+                end
+            end
+        end
+    end
+    
+    return placed_columns, overflow_data
+end
+
 -- Handle multi-column note placement for a single note or content line
 local function place_multi_column_note_data(line, note_data)
     local placed_columns = {}
@@ -957,12 +1086,9 @@ local function place_multi_column_note_data(line, note_data)
             if fx_data and has_effect_data(fx_data) then
                 if fx_index <= #line.effect_columns then
                     local effect_column = line:effect_column(fx_index)
-                    if effect_column.number_value == 0 and effect_column.amount_value == 0 then
-                        place_effect_data(effect_column, fx_data)
-                        print("DEBUG: Placed effect column " .. fx_index)
-                    else
-                        print("DEBUG: Effect column " .. fx_index .. " already occupied, skipping")
-                    end
+                    -- Always place effect data (overwrite existing values)
+                    place_effect_data(effect_column, fx_data)
+                    print("DEBUG: Placed effect column " .. fx_index)
                 else
                     print("DEBUG: Effect column " .. fx_index .. " doesn't exist in track")
                 end
@@ -1202,10 +1328,10 @@ local function handle_replace_overwrite(placement_info, track, pattern)
     return true
 end
 
--- NEW: Handle substitute overwrite behavior
+-- UPDATED: Handle substitute overwrite behavior (per-column clearing)
 local function handle_substitute_overwrite(placement_info, track, pattern)
-    -- Substitute behavior: Only replace notes on lines where the new symbol has notes
-    -- Leave all other existing notes untouched
+    -- Substitute behavior: Only replace notes on specific columns where the new symbol has notes
+    -- Leave all other existing notes untouched (per-column basis)
     
     if not placement_info.notes or #placement_info.notes == 0 then
         return true -- Nothing to substitute
@@ -1215,35 +1341,49 @@ local function handle_substitute_overwrite(placement_info, track, pattern)
     local start_line = placement_info.original_start_line
     print("DEBUG: Substitute using original cursor position: " .. (start_line or "unknown"))
     
-    -- Create a set of lines where new notes will be placed
-    local new_note_lines = {}
+    -- Build a map of line -> columns that will have new notes
+    local new_note_positions = {} -- [line_num][column_num] = true
     for _, note in ipairs(placement_info.notes) do
-        new_note_lines[note.line] = true
+        if not new_note_positions[note.line] then
+            new_note_positions[note.line] = {}
+        end
+        
+        -- Primary note goes in column 1
+        new_note_positions[note.line][1] = true
+        
+        -- Additional note columns (if any)
+        if note.note_columns then
+            for col_index = 2, 12 do
+                local note_col_data = note.note_columns[col_index]
+                if note_col_data and has_note_data(note_col_data) then
+                    new_note_positions[note.line][col_index] = true
+                end
+            end
+        end
     end
     
-    -- Clear notes only on lines where new notes will be placed
+    -- Clear notes only in specific columns where new notes will be placed
     local cleared_notes = 0
-    for line_num, _ in pairs(new_note_lines) do
+    for line_num, columns in pairs(new_note_positions) do
         if line_num >= 1 and line_num <= pattern.number_of_lines then
             local line = track:line(line_num)
             
-            -- Clear all note columns on this specific line only
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
+            -- Clear only the specific columns where new notes will be placed
+            for col_num, _ in pairs(columns) do
+                if col_num <= #line.note_columns then
+                    local note_column = line:note_column(col_num)
+                    if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                        note_column:clear()
+                        cleared_notes = cleared_notes + 1
+                        print("DEBUG: Substitute cleared existing note at line " .. line_num .. " column " .. col_num)
+                    end
                 end
             end
         end
     end
     
     if cleared_notes > 0 then
-        local line_count = 0
-        for _ in pairs(new_note_lines) do
-            line_count = line_count + 1
-        end
-        print("DEBUG: Substitute behavior cleared " .. cleared_notes .. " notes from " .. line_count .. " conflicting lines")
+        print("DEBUG: Substitute behavior cleared " .. cleared_notes .. " notes from specific columns")
     end
     
     return true
@@ -1723,6 +1863,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
     return true
 end
 
+
 -- UPDATED: Place notes in the pattern (now with multi-column support and overflow handling)
 function editor.place_notes_in_pattern(placement_info, track_index)
     if not renoise.song() then
@@ -1778,9 +1919,9 @@ function editor.place_notes_in_pattern(placement_info, track_index)
         elseif current_overwrite_behavior == overwrite_constants.REPLACE then
             handle_replace_overwrite(placement_info, track, pattern)
         elseif current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
-            handle_substitute_overwrite(placement_info, track, pattern)
+            -- SUBSTITUTE: No clearing at all - column-aware placement handles everything
         elseif current_overwrite_behavior == overwrite_constants.RETAIN then
-            handle_retain_overwrite(placement_info, track, pattern)
+            -- RETAIN: No clearing - let column-aware placement handle conflicts naturally
         elseif current_overwrite_behavior == overwrite_constants.EXCLUDE then
             handle_exclude_overwrite(placement_info, track, pattern)
         elseif current_overwrite_behavior == overwrite_constants.INTERSECT then
@@ -1797,52 +1938,85 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     -- NEW: Collect all overflow data from multi-column placement
     local all_overflow_data = {}
     
+    -- Get current overwrite behavior to determine placement strategy
+    local use_sum_behavior = true -- Default to SUM for multi-column logic
+    if get_overwrite_behavior and get_overwrite_behavior_constants then
+        local current_overwrite_behavior = get_overwrite_behavior()
+        local overwrite_constants = get_overwrite_behavior_constants()
+        use_sum_behavior = (current_overwrite_behavior == overwrite_constants.SUM or 
+                           current_overwrite_behavior == overwrite_constants.INTERSECT or
+                           current_overwrite_behavior == overwrite_constants.REPLACE)
+        -- SUBSTITUTE and RETAIN use column-aware logic, EXCLUDE uses single-column logic
+    end
+    
     -- UPDATED: Place each note with multi-column support
     for _, note in ipairs(placement_info.notes) do
         if note.line >= 1 and note.line <= pattern.number_of_lines then
             local line = track:line(note.line)
             
-            -- Get current overwrite behavior to determine placement strategy
-            local use_sum_behavior = true -- Default to SUM for multi-column logic
-            if get_overwrite_behavior and get_overwrite_behavior_constants then
-                local current_overwrite_behavior = get_overwrite_behavior()
-                local overwrite_constants = get_overwrite_behavior_constants()
-                use_sum_behavior = (current_overwrite_behavior == overwrite_constants.SUM or 
-                                   current_overwrite_behavior == overwrite_constants.INTERSECT)
-                -- Other behaviors already handled by their respective handlers above
-            end
             
-            if use_sum_behavior then
-                -- Use multi-column placement for SUM and INTERSECT behaviors
+            -- Determine placement strategy based on overwrite behavior
+            local current_overwrite_behavior = nil
+            if get_overwrite_behavior and get_overwrite_behavior_constants then
+                current_overwrite_behavior = get_overwrite_behavior()
+                local overwrite_constants = get_overwrite_behavior_constants()
+                
+                if current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
+                    -- Use column-aware placement for substitute behavior
+                    local placed_columns, overflow_data = place_column_aware_note_data(line, note, "substitute")
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
+                    end
+                elseif current_overwrite_behavior == overwrite_constants.RETAIN then
+                    -- Use column-aware placement for retain behavior  
+                    local placed_columns, overflow_data = place_column_aware_note_data(line, note, "retain")
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
+                    end
+                elseif use_sum_behavior then
+                    -- Use multi-column placement for SUM, INTERSECT, REPLACE behaviors
+                    local placed_columns, overflow_data = place_multi_column_note_data(line, note)
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
+                    end
+                else
+                    -- Use original single-column logic for EXCLUDE behavior only
+                    local note_column = line:note_column(1)
+                    
+                    -- This logic handles EXCLUDE behavior
+                    -- which has already been processed by its handler
+                    note_column.note_value = note.note_value
+                    
+                    -- Determine instrument value based on instrument source behavior
+                    local instrument_value
+                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                        local current_behavior = get_instrument_source_behavior()
+                        local behavior_constants = get_instrument_source_behavior_constants()
+                        if current_behavior == behavior_constants.CURRENT_SELECTED then
+                            instrument_value = renoise.song().selected_instrument_index - 1
+                        else
+                            instrument_value = (note.source_instrument_index or 1) - 1
+                        end
+                    else
+                        instrument_value = (note.source_instrument_index or 1) - 1
+                    end
+                    note_column.instrument_value = instrument_value
+                    note_column.delay_value = note.delay
+                end
+            else
+                -- Fallback: use multi-column placement
                 local placed_columns, overflow_data = place_multi_column_note_data(line, note)
                 
                 -- Collect overflow data
                 for _, overflow_item in ipairs(overflow_data) do
                     table.insert(all_overflow_data, overflow_item)
                 end
-else
-                -- Use original single-column logic for other overwrite behaviors
-                local note_column = line:note_column(1)
-                
-                -- This logic handles REPLACE, SUBSTITUTE, RETAIN, EXCLUDE behaviors
-                -- which have already been processed by their respective handlers
-                note_column.note_value = note.note_value
-                
-                -- Determine instrument value based on instrument source behavior
-                local instrument_value
-                if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                    local current_behavior = get_instrument_source_behavior()
-                    local behavior_constants = get_instrument_source_behavior_constants()
-                    if current_behavior == behavior_constants.CURRENT_SELECTED then
-                        instrument_value = renoise.song().selected_instrument_index - 1
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                else
-                    instrument_value = (note.source_instrument_index or 1) - 1
-                end
-                note_column.instrument_value = instrument_value
-                note_column.delay_value = note.delay
             end
         end
     end
