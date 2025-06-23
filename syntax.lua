@@ -322,7 +322,7 @@ function syntax.prepare_global_symbol_labels(global_registry)
                     
                     -- Use the instrument index from the symbol data
                     local source_instrument_index = symbol_data.instrument_index
-                    -- Calculate note value for breakpoint symbols
+                    -- Calculate note value for breakpoint symbols (handle both note and effect content)
                     local note_value = 36 + note.instrument_value
                     table.insert(symbol_labels[symbol], syntax.format_break_label(note, label, source_instrument_index, note_value))
                 end

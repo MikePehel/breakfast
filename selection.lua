@@ -57,25 +57,70 @@ function selection.extract_notes_from_selection()
     
     print("DEBUG: Extracting notes from selection - lines " .. selection_data.start_line .. " to " .. selection_data.end_line)
     
-    -- Extract all notes within the selection range
+    -- Extract all content within the selection range (notes, effects, volume, pan, delay)
     for line_idx = selection_data.start_line, selection_data.end_line do
         local line = track:line(line_idx)
         local note_column = line:note_column(1) -- Focus on first note column for primary data
         
+        -- Check if line has any meaningful content
+        local line_has_content = false
+        local content_type = "empty"
+        
+        -- Check for note content
         if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            line_has_content = true
+            content_type = "note"
+        end
+        
+        -- Check for volume/pan/delay content in note columns
+        if not line_has_content then
+            for col = 1, 12 do
+                local nc = line:note_column(col)
+                if nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+                   nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+                   nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
+                   nc.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                    line_has_content = true
+                    if nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+                        content_type = "volume"
+                    elseif nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+                        content_type = "panning"
+                    elseif nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY then
+                        content_type = "delay"
+                    else
+                        content_type = "note_effect"
+                    end
+                    break
+                end
+            end
+        end
+        
+        -- Check for effect column content
+        if not line_has_content then
+            for col = 1, 8 do
+                local ec = line:effect_column(col)
+                if ec.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                    line_has_content = true
+                    content_type = "effect"
+                    break
+                end
+            end
+        end
+        
+        if line_has_content then
             has_notes = true
             
             -- Calculate relative line position (1-based from selection start)
             local relative_line = line_idx - selection_start_line + 1
             
-            -- Validate note values before storing
+            -- Validate note values before storing (if note is present)
             local note_value = note_column.note_value
             local instrument_value = note_column.instrument_value
             
             -- Log the raw values for debugging
-            print("DEBUG: Raw note values - note:" .. note_value .. ", inst:" .. instrument_value)
+            print("DEBUG: Raw content - line:" .. line_idx .. ", type:" .. content_type .. ", note:" .. note_value .. ", inst:" .. instrument_value)
             
-            -- Ensure note value is in valid range (0-121)
+            -- Ensure note value is in valid range (0-121) or empty (121)
             if note_value >= 0 and note_value <= 121 then
                 -- Ensure instrument value is in valid range (0-254, 255 is empty)
                 if instrument_value > 254 then
@@ -93,7 +138,10 @@ function selection.extract_notes_from_selection()
                     delay_value = note_column.delay_value,
                     effect_number_value = note_column.effect_number_value,
                     effect_amount_value = note_column.effect_amount_value,
-                    distance_to_next = 0 -- Will be calculated in next step
+                    distance_to_next = 0, -- Will be calculated in next step
+                    -- NEW: Enhanced content information
+                    has_note = (note_value ~= renoise.PatternLine.EMPTY_NOTE),
+                    content_type = content_type
                 }
                 
                 -- Capture all 12 note columns for this line
@@ -137,7 +185,7 @@ function selection.extract_notes_from_selection()
     end
     
     if not has_notes then
-        return nil, "No valid notes found in selection. Please select a range that contains valid notes."
+        return nil, "No valid content found in selection. Please select a range that contains notes, effects, volume, panning, or delay data."
     end
     
     -- Calculate distances between notes and trailing space
@@ -146,55 +194,81 @@ function selection.extract_notes_from_selection()
     return notes, selection_data
 end
 
--- Calculate timing distances between notes (similar to breakpoints logic)
+-- Calculate timing distances between content lines (notes, effects, etc.)
 function selection.calculate_note_distances(notes, selection_data, pattern)
-    print("DEBUG: Calculating note distances for " .. #notes .. " notes")
+    print("DEBUG: Calculating content distances for " .. #notes .. " content lines")
     
     local song = renoise.song()
     local track = pattern:track(selection_data.start_track)
     
     for i = 1, #notes do
-        local current_note = notes[i]
-        local current_delay = current_note.delay_value
+        local current_content = notes[i]
+        local current_delay = current_content.delay_value
         local found_next = false
         
-        -- Look for next note within our extracted notes
+        -- Look for next content within our extracted notes
         for j = i + 1, #notes do
-            local next_note = notes[j]
-            local lines_to_next = next_note.line - current_note.line
-            local next_delay = next_note.delay_value
-            current_note.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
+            local next_content = notes[j]
+            local lines_to_next = next_content.line - current_content.line
+            local next_delay = next_content.delay_value
+            current_content.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
             found_next = true
-            print("DEBUG: Note " .. i .. " distance to next: " .. current_note.distance_to_next)
+            print("DEBUG: Content " .. i .. " (" .. current_content.content_type .. ") distance to next: " .. current_content.distance_to_next)
             break
         end
         
-        -- If no next note found within selection, look for the next note in the entire pattern
+        -- If no next content found within selection, look for the next content in the entire pattern
         if not found_next then
-            local current_absolute_line = current_note.absolute_line
-            print("DEBUG: Looking for next note after absolute line " .. current_absolute_line .. " in full pattern")
+            local current_absolute_line = current_content.absolute_line
+            print("DEBUG: Looking for next content after absolute line " .. current_absolute_line .. " in full pattern")
             
-            -- Search for the next note beyond the selection in the entire pattern
+            -- Search for the next content beyond the selection in the entire pattern
             for line_idx = selection_data.end_line + 1, pattern.number_of_lines do
                 local line = track:line(line_idx)
-                local note_column = line:note_column(1)
                 
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-                    -- Found the next note beyond the selection
+                -- Check if this line has any content
+                local line_has_content = false
+                
+                -- Check note columns for content
+                for col = 1, 12 do
+                    local nc = line:note_column(col)
+                    if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+                       nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+                       nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+                       nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
+                       nc.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                        line_has_content = true
+                        break
+                    end
+                end
+                
+                -- Check effect columns for content if no note content found
+                if not line_has_content then
+                    for col = 1, 8 do
+                        local ec = line:effect_column(col)
+                        if ec.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                            line_has_content = true
+                            break
+                        end
+                    end
+                end
+                
+                if line_has_content then
+                    -- Found the next content beyond the selection
                     local lines_to_next = line_idx - current_absolute_line
-                    local next_delay = note_column.delay_value
-                    current_note.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
+                    local next_delay = line:note_column(1).delay_value  -- Use first note column delay as reference
+                    current_content.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
                     found_next = true
-                    print("DEBUG: Last note " .. i .. " distance to next note at line " .. line_idx .. ": " .. current_note.distance_to_next)
+                    print("DEBUG: Last content " .. i .. " distance to next content at line " .. line_idx .. ": " .. current_content.distance_to_next)
                     break
                 end
             end
             
-            -- If still no next note found, calculate distance to end of pattern
+            -- If still no next content found, calculate distance to end of pattern
             if not found_next then
                 local lines_to_end = (pattern.number_of_lines + 1) - current_absolute_line
-                current_note.distance_to_next = (lines_to_end * 256) - current_delay
-                print("DEBUG: Last note " .. i .. " distance to end of pattern: " .. current_note.distance_to_next)
+                current_content.distance_to_next = (lines_to_end * 256) - current_delay
+                print("DEBUG: Last content " .. i .. " distance to end of pattern: " .. current_content.distance_to_next)
             end
         end
     end
@@ -310,17 +384,17 @@ function selection.convert_to_break_set(symbol_data)
         end_line = 64 -- Will be adjusted based on actual content
     }
     
-    -- Convert notes to timing format (similar to breakpoints)
-    for i, note in ipairs(symbol_data.notes) do
+    -- Convert content to timing format (similar to breakpoints)
+    for i, content in ipairs(symbol_data.notes) do
         -- Validate and clamp note value to valid Renoise range (0-121)
-        local valid_note_value = note.note_value
+        local valid_note_value = content.note_value
         if valid_note_value < 0 or valid_note_value > 121 then
             print("WARNING: Invalid note value " .. valid_note_value .. " clamped to valid range")
             valid_note_value = math.max(0, math.min(121, valid_note_value))
         end
         
         -- Validate instrument value (0-254, 255 is empty)
-        local valid_instrument_value = note.instrument_value
+        local valid_instrument_value = content.instrument_value
         if valid_instrument_value < 0 or valid_instrument_value > 254 then
             print("WARNING: Invalid instrument value " .. valid_instrument_value .. " clamped to valid range")
             valid_instrument_value = math.max(0, math.min(254, valid_instrument_value))
@@ -333,34 +407,40 @@ function selection.convert_to_break_set(symbol_data)
         -- Create timing entry
         local timing_entry = {
             instrument_value = valid_instrument_value,
-            relative_line = note.line,
-            new_delay = note.delay_value,
-            original_distance = note.distance_to_next,
+            relative_line = content.line,
+            new_delay = content.delay_value,
+            original_distance = content.distance_to_next,
             source_instrument_index = source_instrument_index,
             note_value = valid_note_value,
-            volume_value = note.volume_value,
-            panning_value = note.panning_value,
-            effect_number_value = note.effect_number_value,
-            effect_amount_value = note.effect_amount_value,
-            effect_columns = note.effect_columns or {},
-            note_columns = note.note_columns or {}
+            volume_value = content.volume_value,
+            panning_value = content.panning_value,
+            effect_number_value = content.effect_number_value,
+            effect_amount_value = content.effect_amount_value,
+            effect_columns = content.effect_columns or {},
+            note_columns = content.note_columns or {},
+            -- NEW: Enhanced content information
+            has_note = content.has_note,
+            content_type = content.content_type
         }
         table.insert(break_set.timing, timing_entry)
         
         -- Create note entry for compatibility
         local note_entry = {
-            line = note.line,
+            line = content.line,
             note_value = valid_note_value,
             instrument_value = valid_instrument_value,
-            delay_value = note.delay_value,
-            volume_value = note.volume_value,
-            panning_value = note.panning_value,
-            effect_number_value = note.effect_number_value,
-            effect_amount_value = note.effect_amount_value,
-            effect_columns = note.effect_columns or {},
-            note_columns = note.note_columns or {},
-            distance = note.distance_to_next,
-            is_last = (i == #symbol_data.notes)
+            delay_value = content.delay_value,
+            volume_value = content.volume_value,
+            panning_value = content.panning_value,
+            effect_number_value = content.effect_number_value,
+            effect_amount_value = content.effect_amount_value,
+            effect_columns = content.effect_columns or {},
+            note_columns = content.note_columns or {},
+            distance = content.distance_to_next,
+            is_last = (i == #symbol_data.notes),
+            -- NEW: Enhanced content information
+            has_note = content.has_note,
+            content_type = content.content_type
         }
         table.insert(break_set.notes, note_entry)
     end
@@ -431,8 +511,15 @@ function selection.capture_selection_as_symbol()
         labels_count = labels_count + 1
     end
     
-    local message = string.format("Captured selection as symbol %s (%d notes from pattern %d, track %d, %d labels applied)", 
-        new_symbol, #notes, symbol_data.pattern_index, symbol_data.track_index, labels_count)
+    local note_count = 0
+    for _, content in ipairs(notes) do
+        if content.has_note then
+            note_count = note_count + 1
+        end
+    end
+    
+    local message = string.format("Captured selection as symbol %s (%d content lines, %d notes from pattern %d, track %d, %d labels applied)", 
+        new_symbol, #notes, note_count, symbol_data.pattern_index, symbol_data.track_index, labels_count)
     renoise.app():show_status(message)
     print("DEBUG: " .. message)
     

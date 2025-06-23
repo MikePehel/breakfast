@@ -278,7 +278,16 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
             instrument_value = timing.instrument_value,
             note_value = note_value,
             source_instrument_index = timing.source_instrument_index,
-            original_distance = timing.original_distance  -- Include distance for pattern extension
+            original_distance = timing.original_distance,  -- Include distance for pattern extension
+            -- ENHANCED: More comprehensive content information
+            has_note = timing.has_note or (note_value ~= renoise.PatternLine.EMPTY_NOTE),
+            content_type = timing.content_type or (timing.has_note and "note" or "effect"),
+            volume_value = timing.volume_value,
+            panning_value = timing.panning_value,
+            effect_number_value = timing.effect_number_value,
+            effect_amount_value = timing.effect_amount_value,
+            effect_columns = timing.effect_columns or {},
+            note_columns = timing.note_columns or {}
         })
         
         -- Keep track of the last note timing for calculating next symbol position
@@ -510,7 +519,10 @@ function editor.calculate_placement_positions(break_set, start_line)
             delay = timing.new_delay,
             instrument_value = timing.instrument_value,
             note_value = note_value,
-            source_instrument_index = timing.source_instrument_index
+            source_instrument_index = timing.source_instrument_index,
+            -- NEW: Include multi-column data for backward compatibility
+            note_columns = timing.note_columns,  -- All 12 note columns data
+            effect_columns = timing.effect_columns  -- All 8 effect columns data
         })
         
         -- Keep track of the last note timing for calculating next symbol position
@@ -676,6 +688,289 @@ local function handle_loop_overflow(placement_info, pattern)
     end
     
     return true, wrapped_notes > 0 and wrapped_notes or nil
+end
+
+-- Helper function to check if note column data contains meaningful content
+local function has_note_data(note_col_data)
+    return note_col_data and (
+        note_col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+        note_col_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+        note_col_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+        note_col_data.delay_value ~= 0 or
+        note_col_data.effect_number_value ~= 0 or
+        note_col_data.effect_amount_value ~= 0
+    )
+end
+
+-- Helper function to check if effect column data contains meaningful content
+local function has_effect_data(fx_data)
+    return fx_data and (
+        fx_data.number_value ~= 0 or
+        fx_data.amount_value ~= 0
+    )
+end
+
+-- Find next available note column starting from a given column
+local function find_available_note_column(line, start_column)
+    start_column = start_column or 1
+    for col = start_column, #line.note_columns do
+        local note_column = line:note_column(col)
+        if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
+            return col
+        end
+    end
+    return nil
+end
+
+-- Place note column data with instrument source behavior support
+local function place_note_column_data(note_column, note_col_data, primary_note_data)
+    if note_col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+        note_column.note_value = note_col_data.note_value
+    end
+    
+    -- Handle instrument value with instrument source behavior
+    if note_col_data.instrument_value and note_col_data.instrument_value ~= renoise.PatternLine.EMPTY_INSTRUMENT then
+        local instrument_value
+        if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+            local current_behavior = get_instrument_source_behavior()
+            local behavior_constants = get_instrument_source_behavior_constants()
+            if current_behavior == behavior_constants.CURRENT_SELECTED then
+                instrument_value = renoise.song().selected_instrument_index - 1
+            else
+                -- Use the instrument from the note column data, but fall back to primary note's source
+                instrument_value = note_col_data.instrument_value
+                if instrument_value == renoise.PatternLine.EMPTY_INSTRUMENT and primary_note_data.source_instrument_index then
+                    instrument_value = (primary_note_data.source_instrument_index or 1) - 1
+                end
+            end
+        else
+            instrument_value = note_col_data.instrument_value
+            if instrument_value == renoise.PatternLine.EMPTY_INSTRUMENT and primary_note_data.source_instrument_index then
+                instrument_value = (primary_note_data.source_instrument_index or 1) - 1
+            end
+        end
+        note_column.instrument_value = instrument_value
+    end
+    
+    -- Set other note column properties
+    if note_col_data.volume_value and note_col_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+        note_column.volume_value = note_col_data.volume_value
+    end
+    if note_col_data.panning_value and note_col_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+        note_column.panning_value = note_col_data.panning_value
+    end
+    if note_col_data.delay_value and note_col_data.delay_value ~= 0 then
+        note_column.delay_value = note_col_data.delay_value
+    end
+    if note_col_data.effect_number_value and note_col_data.effect_number_value ~= 0 then
+        note_column.effect_number_value = note_col_data.effect_number_value
+    end
+    if note_col_data.effect_amount_value and note_col_data.effect_amount_value ~= 0 then
+        note_column.effect_amount_value = note_col_data.effect_amount_value
+    end
+end
+
+-- Place effect column data
+local function place_effect_data(effect_column, fx_data)
+    if fx_data.number_value and fx_data.number_value ~= 0 then
+        effect_column.number_value = fx_data.number_value
+    end
+    if fx_data.amount_value and fx_data.amount_value ~= 0 then
+        effect_column.amount_value = fx_data.amount_value
+    end
+end
+
+-- Show overflow dialog to user
+local function show_overflow_dialog(overflow_count, callback)
+    local vb = renoise.ViewBuilder()
+    local overflow_dialog = nil
+    
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
+        
+        vb:text {
+            text = "Track Overflow",
+            font = "big",
+            style = "strong"
+        },
+        
+        vb:text {
+            text = string.format("Cannot place %d additional note(s).", overflow_count),
+            width = 300
+        },
+        
+        vb:text {
+            text = "All 12 note columns are occupied in this track.",
+            width = 300
+        },
+        
+        vb:space { height = 5 },
+        
+        vb:text {
+            text = "How would you like to handle the overflow?",
+            style = "strong"
+        },
+        
+        vb:space { height = 10 },
+        
+        vb:row {
+            spacing = 10,
+            vb:button {
+                text = "Add New Track",
+                width = 120,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Add Track")
+                end
+            },
+            vb:button {
+                text = "Truncate",
+                width = 80,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Truncate")
+                end
+            },
+            vb:button {
+                text = "Cancel",
+                width = 80,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Cancel")
+                end
+            }
+        }
+    }
+    
+    overflow_dialog = renoise.app():show_custom_dialog("BreakFast - Track Overflow", dialog_content)
+end
+
+-- Create new track for overflow data
+local function create_overflow_track(song, current_track_index, overflow_data)
+    if #overflow_data == 0 then
+        return true
+    end
+    
+    -- Insert new track after current track
+    local new_track_index = current_track_index + 1
+    song:insert_track_at(new_track_index)
+    
+    -- Name the new track
+    local new_track = song:track(new_track_index)
+    local current_track_name = song:track(current_track_index).name
+    new_track.name = current_track_name .. " Overflow"
+    
+    print("DEBUG: Created overflow track '" .. new_track.name .. "' at index " .. new_track_index)
+    print("DEBUG: Need to handle " .. #overflow_data .. " overflow items")
+    
+    return true, new_track_index
+end
+
+-- Handle multi-column note placement for a single note or content line
+local function place_multi_column_note_data(line, note_data)
+    local placed_columns = {}
+    local overflow_data = {}
+    
+    -- Place primary content in first available column (notes or effects)
+    local primary_column = find_available_note_column(line, 1)
+    if primary_column then
+        local note_column = line:note_column(primary_column)
+        
+        -- Set note data if present, otherwise leave as empty note
+        if note_data.has_note then
+            note_column.note_value = note_data.note_value
+            
+            -- Determine instrument value based on instrument source behavior
+            local instrument_value
+            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                local current_behavior = get_instrument_source_behavior()
+                local behavior_constants = get_instrument_source_behavior_constants()
+                if current_behavior == behavior_constants.CURRENT_SELECTED then
+                    instrument_value = renoise.song().selected_instrument_index - 1
+                else
+                    instrument_value = (note_data.source_instrument_index or 1) - 1
+                end
+            else
+                instrument_value = (note_data.source_instrument_index or 1) - 1
+            end
+            note_column.instrument_value = instrument_value
+        end
+        
+        -- Always set volume, panning, delay, and effects (even for effect-only content)
+        if note_data.volume_value and note_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+            note_column.volume_value = note_data.volume_value
+        end
+        if note_data.panning_value and note_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+            note_column.panning_value = note_data.panning_value
+        end
+        note_column.delay_value = note_data.delay
+        if note_data.effect_number_value and note_data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            note_column.effect_number_value = note_data.effect_number_value
+        end
+        if note_data.effect_amount_value and note_data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+            note_column.effect_amount_value = note_data.effect_amount_value
+        end
+        
+        placed_columns[1] = primary_column
+        print("DEBUG: Placed primary content (" .. (note_data.content_type or "unknown") .. ") at column " .. primary_column)
+    else
+        table.insert(overflow_data, {
+            type = "primary", 
+            line = note_data.line,
+            data = note_data
+        })
+        print("DEBUG: Primary content overflowed - no available columns")
+    end
+    
+    -- Place additional note columns if they exist
+    if note_data.note_columns then
+        for col_index = 2, 12 do
+            local note_col_data = note_data.note_columns[col_index]
+            if note_col_data and has_note_data(note_col_data) then
+                local available_column = find_available_note_column(line, (primary_column or 0) + 1)
+                if available_column then
+                    place_note_column_data(line:note_column(available_column), note_col_data, note_data)
+                    placed_columns[col_index] = available_column
+                    print("DEBUG: Placed additional note column " .. col_index .. " at column " .. available_column)
+                else
+                    table.insert(overflow_data, {
+                        type = "note_column", 
+                        line = note_data.line,
+                        index = col_index, 
+                        data = note_col_data,
+                        primary_data = note_data
+                    })
+                    print("DEBUG: Note column " .. col_index .. " overflowed")
+                end
+            end
+        end
+    end
+    
+    -- Place effect columns (these have dedicated slots, so less likely to overflow)
+    if note_data.effect_columns then
+        for fx_index = 1, 8 do
+            local fx_data = note_data.effect_columns[fx_index]
+            if fx_data and has_effect_data(fx_data) then
+                if fx_index <= #line.effect_columns then
+                    local effect_column = line:effect_column(fx_index)
+                    if effect_column.number_value == 0 and effect_column.amount_value == 0 then
+                        place_effect_data(effect_column, fx_data)
+                        print("DEBUG: Placed effect column " .. fx_index)
+                    else
+                        print("DEBUG: Effect column " .. fx_index .. " already occupied, skipping")
+                    end
+                else
+                    print("DEBUG: Effect column " .. fx_index .. " doesn't exist in track")
+                end
+            end
+        end
+    end
+    
+    return placed_columns, overflow_data
 end
 
 -- Handle sum overwrite behavior (existing)
@@ -1428,7 +1723,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
     return true
 end
 
--- UPDATED: Place notes in the pattern (now includes substitute overwrite behavior handling)
+-- UPDATED: Place notes in the pattern (now with multi-column support and overflow handling)
 function editor.place_notes_in_pattern(placement_info, track_index)
     if not renoise.song() then
         renoise.app():show_warning("Song not available")
@@ -1499,105 +1794,40 @@ function editor.place_notes_in_pattern(placement_info, track_index)
         handle_sum_overwrite(placement_info, track, pattern)
     end
     
-    -- UPDATED: Place each note (updated logic to handle different overwrite behaviors including substitute, retain, exclude, and intersect)
+    -- NEW: Collect all overflow data from multi-column placement
+    local all_overflow_data = {}
+    
+    -- UPDATED: Place each note with multi-column support
     for _, note in ipairs(placement_info.notes) do
         if note.line >= 1 and note.line <= pattern.number_of_lines then
             local line = track:line(note.line)
-            local note_column = line:note_column(1)
             
             -- Get current overwrite behavior to determine placement strategy
-            local use_replace_behavior = false
-            local use_substitute_behavior = false
-            local use_retain_behavior = false
-            local use_exclude_behavior = false
-            local use_intersect_behavior = false
+            local use_sum_behavior = true -- Default to SUM for multi-column logic
             if get_overwrite_behavior and get_overwrite_behavior_constants then
                 local current_overwrite_behavior = get_overwrite_behavior()
                 local overwrite_constants = get_overwrite_behavior_constants()
-                use_replace_behavior = (current_overwrite_behavior == overwrite_constants.REPLACE)
-                use_substitute_behavior = (current_overwrite_behavior == overwrite_constants.SUBSTITUTE)
-                use_retain_behavior = (current_overwrite_behavior == overwrite_constants.RETAIN)
-                use_exclude_behavior = (current_overwrite_behavior == overwrite_constants.EXCLUDE)
-                use_intersect_behavior = (current_overwrite_behavior == overwrite_constants.INTERSECT)  -- NEW
+                use_sum_behavior = (current_overwrite_behavior == overwrite_constants.SUM or 
+                                   current_overwrite_behavior == overwrite_constants.INTERSECT)
+                -- Other behaviors already handled by their respective handlers above
             end
             
-            if use_replace_behavior or use_substitute_behavior or use_exclude_behavior then
-                -- Replace/Substitute/Exclude behavior: Always place in first column (we've already processed conflicts)
-                note_column.note_value = note.note_value
-                -- Determine instrument value based on instrument source behavior
-                local instrument_value
-                if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                    local current_behavior = get_instrument_source_behavior()
-                    local behavior_constants = get_instrument_source_behavior_constants()
-                    if current_behavior == behavior_constants.CURRENT_SELECTED then
-                        -- Use currently selected instrument (0-based for API)
-                        instrument_value = renoise.song().selected_instrument_index - 1
-                    else
-                        -- Use embedded instrument value (default/fallback behavior)
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                else
-                    -- Fallback if instrument source behavior functions not available
-                    instrument_value = (note.source_instrument_index or 1) - 1
+            if use_sum_behavior then
+                -- Use multi-column placement for SUM and INTERSECT behaviors
+                local placed_columns, overflow_data = place_multi_column_note_data(line, note)
+                
+                -- Collect overflow data
+                for _, overflow_item in ipairs(overflow_data) do
+                    table.insert(all_overflow_data, overflow_item)
                 end
-                note_column.instrument_value = instrument_value
-                note_column.delay_value = note.delay
-elseif use_intersect_behavior then
-                -- Intersect behavior: Always place new notes, use sum logic for conflicts (opposite of exclude)
-                -- This is identical to sum behavior - place in first column if empty, otherwise try additional columns
-                if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                    note_column.note_value = note.note_value
-                    -- Determine instrument value based on instrument source behavior
-                    local instrument_value
-                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                        local current_behavior = get_instrument_source_behavior()
-                        local behavior_constants = get_instrument_source_behavior_constants()
-                        if current_behavior == behavior_constants.CURRENT_SELECTED then
-                            instrument_value = renoise.song().selected_instrument_index - 1
-                        else
-                            instrument_value = (note.source_instrument_index or 1) - 1
-                        end
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                    note_column.instrument_value = instrument_value
-                    note_column.delay_value = note.delay
-                else
-                    -- Try additional columns if first is occupied (Sum behavior for intersect conflicts)
-                    local placed = false
-                    for col = 2, #line.note_columns do
-                        local alt_column = line:note_column(col)
-                        if alt_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                            alt_column.note_value = note.note_value
-                            -- Determine instrument value based on instrument source behavior
-                            local instrument_value
-                            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                                local current_behavior = get_instrument_source_behavior()
-                                local behavior_constants = get_instrument_source_behavior_constants()
-                                if current_behavior == behavior_constants.CURRENT_SELECTED then
-                                    instrument_value = renoise.song().selected_instrument_index - 1
-                                else
-                                    instrument_value = (note.source_instrument_index or 1) - 1
-                                end
-                            else
-                                instrument_value = (note.source_instrument_index or 1) - 1
-                            end
-                            alt_column.instrument_value = instrument_value
-                            alt_column.delay_value = note.delay
-                            placed = true
-                            break
-                        end
-                    end
-                    
-                    if not placed then
-                        renoise.app():show_warning(string.format(
-                            "Could not place intersect note at line %d - all columns occupied", note.line))
-                    end
-                end
-            elseif use_retain_behavior then
-                -- Retain behavior: Only place if first column is empty (filtering already done in handler)
-                -- Since we've already filtered in handle_retain_overwrite, we can place directly
+else
+                -- Use original single-column logic for other overwrite behaviors
+                local note_column = line:note_column(1)
+                
+                -- This logic handles REPLACE, SUBSTITUTE, RETAIN, EXCLUDE behaviors
+                -- which have already been processed by their respective handlers
                 note_column.note_value = note.note_value
+                
                 -- Determine instrument value based on instrument source behavior
                 local instrument_value
                 if get_instrument_source_behavior and get_instrument_source_behavior_constants then
@@ -1613,63 +1843,114 @@ elseif use_intersect_behavior then
                 end
                 note_column.instrument_value = instrument_value
                 note_column.delay_value = note.delay
-            else
-                -- Sum behavior: Only place if the slot is empty to avoid overwriting existing notes
-                if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                    note_column.note_value = note.note_value
-                    -- Determine instrument value based on instrument source behavior
-                    local instrument_value
-                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                        local current_behavior = get_instrument_source_behavior()
-                        local behavior_constants = get_instrument_source_behavior_constants()
-                        if current_behavior == behavior_constants.CURRENT_SELECTED then
-                            instrument_value = renoise.song().selected_instrument_index - 1
-                        else
-                            instrument_value = (note.source_instrument_index or 1) - 1
-                        end
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                    note_column.instrument_value = instrument_value
-                    note_column.delay_value = note.delay
-                else
-                    -- Try additional columns if first is occupied (Sum behavior)
-                    local placed = false
-                    for col = 2, #line.note_columns do
-                        local alt_column = line:note_column(col)
-                        if alt_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                            alt_column.note_value = note.note_value
-                            -- Determine instrument value based on instrument source behavior
-                            local instrument_value
-                            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                                local current_behavior = get_instrument_source_behavior()
-                                local behavior_constants = get_instrument_source_behavior_constants()
-                                if current_behavior == behavior_constants.CURRENT_SELECTED then
-                                    instrument_value = renoise.song().selected_instrument_index - 1
-                                else
-                                    instrument_value = (note.source_instrument_index or 1) - 1
-                                end
-                            else
-                                instrument_value = (note.source_instrument_index or 1) - 1
-                            end
-                            alt_column.instrument_value = instrument_value
-                            alt_column.delay_value = note.delay
-                            placed = true
-                            break
-                        end
-                    end
-                    
-                    if not placed then
-                        renoise.app():show_warning(string.format(
-                            "Could not place note at line %d - all columns occupied", note.line))
-                    end
-                end
             end
+        end
+    end
+    
+    -- Handle overflow if any occurred
+    if #all_overflow_data > 0 then
+        print("DEBUG: Processing " .. #all_overflow_data .. " overflow items")
+        
+        -- Show dialog with callback to handle user choice
+        show_overflow_dialog(#all_overflow_data, function(choice)
+            if choice == "Add Track" then
+                local success, new_track_index = create_overflow_track(song, track_index, all_overflow_data)
+                if success and new_track_index then
+                    -- Place overflow data in the new track
+                    local new_track = pattern:track(new_track_index)
+                    local overflow_notes_placed = 0
+                    
+                    for _, overflow_item in ipairs(all_overflow_data) do
+                        local target_line = new_track:line(overflow_item.line)
+                        
+                        if overflow_item.type == "primary" then
+                            -- Find first available column for primary content
+                            local available_column = find_available_note_column(target_line, 1)
+                            if available_column then
+                                local note_column = target_line:note_column(available_column)
+                                
+                                -- Set note data if present, otherwise leave as empty note
+                                if overflow_item.data.has_note then
+                                    note_column.note_value = overflow_item.data.note_value
+                                    
+                                    -- Apply instrument source behavior
+                                    local instrument_value
+                                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                                        local current_behavior = get_instrument_source_behavior()
+                                        local behavior_constants = get_instrument_source_behavior_constants()
+                                        if current_behavior == behavior_constants.CURRENT_SELECTED then
+                                            instrument_value = renoise.song().selected_instrument_index - 1
+                                        else
+                                            instrument_value = (overflow_item.data.source_instrument_index or 1) - 1
+                                        end
+                                    else
+                                        instrument_value = (overflow_item.data.source_instrument_index or 1) - 1
+                                    end
+                                    note_column.instrument_value = instrument_value
+                                end
+                                
+                                -- Always set volume, panning, delay, and effects
+                                if overflow_item.data.volume_value and overflow_item.data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+                                    note_column.volume_value = overflow_item.data.volume_value
+                                end
+                                if overflow_item.data.panning_value and overflow_item.data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+                                    note_column.panning_value = overflow_item.data.panning_value
+                                end
+                                note_column.delay_value = overflow_item.data.delay
+                                if overflow_item.data.effect_number_value and overflow_item.data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                                    note_column.effect_number_value = overflow_item.data.effect_number_value
+                                end
+                                if overflow_item.data.effect_amount_value and overflow_item.data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+                                    note_column.effect_amount_value = overflow_item.data.effect_amount_value
+                                end
+                                overflow_notes_placed = overflow_notes_placed + 1
+                            end
+                        elseif overflow_item.type == "note_column" then
+                            -- Find first available column for additional note column
+                            local available_column = find_available_note_column(target_line, 1)
+                            if available_column then
+                                place_note_column_data(target_line:note_column(available_column), overflow_item.data, overflow_item.primary_data)
+                                overflow_notes_placed = overflow_notes_placed + 1
+                            end
+                        end
+                    end
+                    
+                    renoise.app():show_status(string.format("BreakFast: Placed %d notes, %d overflow notes in new track '%s'", 
+                        #placement_info.notes - #all_overflow_data, overflow_notes_placed, song:track(new_track_index).name))
+                else
+                    renoise.app():show_error("Failed to create overflow track")
+                end
+            elseif choice == "Truncate" then
+                renoise.app():show_status(string.format("BreakFast: Placed %d notes, truncated %d overflow notes", 
+                    #placement_info.notes - #all_overflow_data, #all_overflow_data))
+            else
+                renoise.app():show_status("BreakFast: Placement cancelled due to overflow")
+            end
+        end)
+        
+        -- Return true immediately since overflow handling is now asynchronous
+        return true
+    else
+        -- No overflow, show normal success message
+        local note_count = 0
+        for _, content in ipairs(placement_info.notes) do
+            if content.has_note then
+                note_count = note_count + 1
+            end
+        end
+        
+        if note_count == #placement_info.notes then
+            renoise.app():show_status(string.format("BreakFast: Placed %d notes with multi-column data", #placement_info.notes))
+        else
+            renoise.app():show_status(string.format("BreakFast: Placed %d content lines (%d notes, %d effects/controls) with multi-column data", 
+                #placement_info.notes, note_count, #placement_info.notes - note_count))
         end
     end
     
     return true
 end
+
+
 
 -- Individual symbol placement functions for keybinding (unchanged)
 function editor.place_symbol_a()

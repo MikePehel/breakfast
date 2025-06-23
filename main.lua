@@ -1001,8 +1001,8 @@ function export_global_alphabet_csv()
         return
     end
     
-    -- Write CSV header - expanded to include symbol type, range capture metadata, tags, color, Vol/Pan/FX, and all 12 note columns
-    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
+    -- Write CSV header - expanded to include content type and enhanced content detection
+    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
 
     -- Write data for each symbol
     for symbol, symbol_data in pairs(global_symbol_registry) do
@@ -1152,7 +1152,10 @@ function export_global_alphabet_csv()
                     timing.volume_value or "",
                     timing.panning_value or "",
                     timing.effect_number_value or "",
-                    timing.effect_amount_value or ""
+                    timing.effect_amount_value or "",
+                    -- NEW: Enhanced content information
+                    tostring(timing.has_note or false),
+                    timing.content_type or ""
                 }
                 
                 -- Add all effect columns data
@@ -1260,7 +1263,10 @@ function export_global_alphabet_json()
                     timing_line = timing.relative_line or 1,
                     timing_delay = timing.new_delay or 0,
                     original_distance = timing.original_distance or 256,
-                    source_instrument_index = actual_instrument_value
+                    source_instrument_index = actual_instrument_value,
+                    -- NEW: Enhanced content information
+                    has_note = timing.has_note or false,
+                    content_type = timing.content_type or "note"
                 }
                 
                 -- Add note_value for range-captured symbols
@@ -1302,7 +1308,10 @@ function export_global_alphabet_json()
                     effect_number_value = timing.effect_number_value,
                     effect_amount_value = timing.effect_amount_value,
                     effect_columns = timing.effect_columns or {},
-                    note_columns = timing.note_columns or {}
+                    note_columns = timing.note_columns or {},
+                    -- NEW: Enhanced content information
+                    has_note = timing.has_note or false,
+                    content_type = timing.content_type or "note"
                 })
             end
         end
@@ -1433,11 +1442,11 @@ function import_global_alphabet_csv()
     local header_fields = parse_csv_line(header)
     local column_positions = {}
     
-    -- Updated expected columns to include new fields, all 8 effect columns, and all 12 note columns
+    -- Updated expected columns to include content type fields, all 8 effect columns, and all 12 note columns
     local expected_columns = {
         "symbol", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
         "timingline", "timingdelay", "originaldistance", "notevalue", "volumevalue", "panningvalue", 
-        "effectnumber", "effectamount", 
+        "effectnumber", "effectamount", "hasnote", "contenttype",
         "effectcolumn1number", "effectcolumn1amount", "effectcolumn2number", "effectcolumn2amount",
         "effectcolumn3number", "effectcolumn3amount", "effectcolumn4number", "effectcolumn4amount",
         "effectcolumn5number", "effectcolumn5amount", "effectcolumn6number", "effectcolumn6amount",
@@ -1539,6 +1548,17 @@ function import_global_alphabet_csv()
                 local effect_amount_value = nil
                 if column_positions.effectamount and fields[column_positions.effectamount] and fields[column_positions.effectamount] ~= "" then
                     effect_amount_value = tonumber(unescape_csv_field(fields[column_positions.effectamount]))
+                end
+                
+                -- Extract enhanced content information
+                local has_note = true  -- Default to true for backward compatibility
+                if column_positions.hasnote and fields[column_positions.hasnote] and fields[column_positions.hasnote] ~= "" then
+                    has_note = (unescape_csv_field(fields[column_positions.hasnote]):lower() == "true")
+                end
+                
+                local content_type = "note"  -- Default for backward compatibility
+                if column_positions.contenttype and fields[column_positions.contenttype] and fields[column_positions.contenttype] ~= "" then
+                    content_type = unescape_csv_field(fields[column_positions.contenttype])
                 end
                 
                 -- Extract all 8 effect columns data
@@ -1659,6 +1679,10 @@ function import_global_alphabet_csv()
                     if effect_amount_value then
                         timing_entry.effect_amount_value = effect_amount_value
                     end
+                    
+                    -- Add enhanced content information
+                    timing_entry.has_note = has_note
+                    timing_entry.content_type = content_type
                     
                     -- Add effect columns data if present
                     if next(effect_columns_data) ~= nil then
@@ -1987,6 +2011,10 @@ function import_global_alphabet_json()
                             if entry.note_columns then
                                 timing_entry.note_columns = entry.note_columns
                             end
+                            
+                            -- Add enhanced content information
+                            timing_entry.has_note = entry.has_note or false
+                            timing_entry.content_type = entry.content_type or "note"
                             
                             table.insert(timing_data, timing_entry)
                             

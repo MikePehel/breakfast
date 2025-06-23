@@ -1,6 +1,87 @@
 -- breakpoints.lua - Break Pattern Analysis and Generation
 local breakpoints = {}
 
+-- Check if a line has any meaningful content (notes, effects, volume, pan, delay)
+local function line_has_content(line)
+    -- Check all 12 note columns for any content
+    for col = 1, 12 do
+        local note_column = line:note_column(col)
+        if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+           note_column.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+           note_column.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+           note_column.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
+           note_column.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            return true
+        end
+    end
+    
+    -- Check all 8 effect columns for any content
+    for col = 1, 8 do
+        local effect_column = line:effect_column(col)
+        if effect_column.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- Determine the primary content type of a line
+local function determine_content_type(line)
+    local has_note = false
+    local has_volume = false
+    local has_panning = false
+    local has_delay = false
+    local has_note_effect = false
+    local has_master_effect = false
+    
+    -- Check all 12 note columns
+    for col = 1, 12 do
+        local note_column = line:note_column(col)
+        if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            has_note = true
+        end
+        if note_column.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+            has_volume = true
+        end
+        if note_column.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+            has_panning = true
+        end
+        if note_column.delay_value ~= renoise.PatternLine.EMPTY_DELAY then
+            has_delay = true
+        end
+        if note_column.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            has_note_effect = true
+        end
+    end
+    
+    -- Check all 8 effect columns
+    for col = 1, 8 do
+        local effect_column = line:effect_column(col)
+        if effect_column.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            has_master_effect = true
+        end
+    end
+    
+    -- Determine primary content type
+    if has_note then
+        return "note"  -- Line has notes (may also have effects)
+    elseif has_master_effect then
+        return "effect"  -- Line has master effects only
+    elseif has_volume then
+        return "volume"  -- Line has volume data only
+    elseif has_panning then
+        return "panning"  -- Line has panning data only
+    elseif has_delay then
+        return "delay"  -- Line has delay data only
+    elseif has_note_effect then
+        return "note_effect"  -- Line has note column effects only
+    else
+        return "empty"  -- Should not happen if line_has_content returned true
+    end
+end
+
+
 -- Calculate timing distances between notes in a set
 local function calculate_set_distances(set, analysis, source_instrument_index)
     local set_timing = {}
@@ -117,7 +198,7 @@ local function get_line_analysis(phrase)
     local song = renoise.song()
     local current_instrument_index = song.selected_instrument_index
     
-    -- First pass: collect all note data
+    -- First pass: collect all line data (notes, effects, volume, pan, delay)
     print("DEBUG: Analyzing phrase with", lines, "lines")
     for i = 1, lines do
         local line = phrase:line(i)
@@ -132,7 +213,11 @@ local function get_line_analysis(phrase)
             effect_number_value = note_column.effect_number_value,
             effect_amount_value = note_column.effect_amount_value,
             distance = 0,
-            is_last = false
+            is_last = false,
+            -- NEW: Enhanced content detection
+            has_note = (note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE),
+            has_content = line_has_content(line),
+            content_type = determine_content_type(line)
         }
         
         -- Capture all 12 note columns for this line
@@ -155,7 +240,6 @@ local function get_line_analysis(phrase)
         
         -- Capture all 8 effect columns for this line
         analysis[i].effect_columns = {}
-        local line = phrase:line(i)
         for fx_col = 1, 8 do
             local effect_column = line:effect_column(fx_col)
             if effect_column then
@@ -167,9 +251,9 @@ local function get_line_analysis(phrase)
             end
         end
         
-        -- DEBUG: Show every line with data
-        if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-            print("DEBUG: Line", i, "raw note_value:", note_column.note_value, "instrument_value:", note_column.instrument_value, "delay:", note_column.delay_value)
+        -- DEBUG: Show every line with data (notes or effects)
+        if analysis[i].has_content then
+            print("DEBUG: Line", i, "content_type:", analysis[i].content_type, "has_note:", analysis[i].has_note, "note_value:", note_column.note_value, "instrument_value:", note_column.instrument_value)
         end
     end
 
@@ -216,27 +300,27 @@ local function get_line_analysis(phrase)
         print("DEBUG: Not interpolating - all_instruments_empty:", all_instruments_empty, "note_count:", note_count)
     end
     
-    -- Second pass: calculate distances and identify last note
-    local last_note_index = nil
+    -- Second pass: calculate distances and identify last content
+    local last_content_index = nil
     
-    -- Find the last actual note
+    -- Find the last line with actual content
     for i = lines, 1, -1 do
-        if analysis[i].note_value ~= renoise.PatternLine.EMPTY_NOTE then
-            last_note_index = i
+        if analysis[i].has_content then
+            last_content_index = i
             analysis[i].is_last = true
             break
         end
     end
     
-    -- Calculate distances
+    -- Calculate distances for all lines with content
     for i = 1, lines do
-        if analysis[i].note_value ~= renoise.PatternLine.EMPTY_NOTE then
+        if analysis[i].has_content then
             local current_delay = analysis[i].delay_value
             local found_next = false
             
-            -- Look for next note
+            -- Look for next line with content
             for j = i + 1, lines do
-                if analysis[j].note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if analysis[j].has_content then
                     local lines_to_next = j - i
                     local next_delay = analysis[j].delay_value
                     analysis[i].distance = (lines_to_next * 256) - current_delay + next_delay
@@ -245,7 +329,7 @@ local function get_line_analysis(phrase)
                 end
             end
             
-            -- If no next note found, calculate distance to end
+            -- If no next content found, calculate distance to end
             if not found_next then
                 local lines_to_end = (lines + 1) - i
                 analysis[i].distance = (lines_to_end * 256) - current_delay
@@ -254,15 +338,32 @@ local function get_line_analysis(phrase)
     end
     
     -- DEBUG: Show final analysis results
-    print("DEBUG: Final analysis - found", note_count, "notes")
-    if note_count > 0 then
+    local content_count = 0
+    local content_type_summary = {}
+    for i = 1, lines do
+        if analysis[i].has_content then
+            content_count = content_count + 1
+            local content_type = analysis[i].content_type
+            content_type_summary[content_type] = (content_type_summary[content_type] or 0) + 1
+        end
+    end
+    
+    print("DEBUG: Final analysis - found", content_count, "lines with content (notes:", note_count, ")")
+    if content_count > 0 then
         local sample_summary = {}
         for i = 1, lines do
-            if analysis[i].note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            if analysis[i].has_note then
                 local slice = analysis[i].instrument_value
                 sample_summary[slice] = (sample_summary[slice] or 0) + 1
             end
         end
+        print("DEBUG: Content types:", (function()
+            local str = ""
+            for content_type, count in pairs(content_type_summary) do
+                str = str .. content_type .. "=" .. count .. " "
+            end
+            return str
+        end)())
         print("DEBUG: Slice usage:", (function()
             local str = ""
             for slice, count in pairs(sample_summary) do
@@ -301,9 +402,9 @@ function breakpoints.create_break_patterns(instrument, original_phrase, saved_la
             notes = {}
         }
         
-        -- Collect notes within this set's boundaries
+        -- Collect all content within this set's boundaries (notes, effects, volume, pan, delay)
         for line = set.start_line, set.end_line do
-            if analysis[line] and analysis[line].note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            if analysis[line] and analysis[line].has_content then
                 table.insert(set.notes, {
                     line = line,
                     note_value = analysis[line].note_value,
@@ -316,7 +417,10 @@ function breakpoints.create_break_patterns(instrument, original_phrase, saved_la
                     effect_columns = analysis[line].effect_columns or {},
                     note_columns = analysis[line].note_columns or {},
                     distance = analysis[line].distance,
-                    is_last = analysis[line].is_last
+                    is_last = analysis[line].is_last,
+                    -- NEW: Enhanced content information
+                    has_note = analysis[line].has_note,
+                    content_type = analysis[line].content_type
                 })
             end
         end
