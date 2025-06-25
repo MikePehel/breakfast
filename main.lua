@@ -3504,11 +3504,18 @@ local function create_symbol_editor_dialog()
                         }
                     },
                     
-                    -- Symbol grid for current page (3x4 = 12 symbols per page)
+-- Symbol grid for current page (3x4 = 12 symbols per page)
                     (function()
                         local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
                         local start_index = (symbol_pagination.current_page - 1) * symbol_pagination.symbols_per_page + 1
                         local end_index = math.min(start_index + symbol_pagination.symbols_per_page - 1, #all_symbols)
+                        
+                        -- Debug: Check global symbol registry state
+                        print("DEBUG: Global symbol registry has " .. table.count(global_symbol_registry) .. " symbols")
+                        for symbol, symbol_data in pairs(global_symbol_registry) do
+                            local tags = symbol_data.tags or {}
+                            print("DEBUG: Symbol " .. symbol .. " has " .. #tags .. " tags: " .. table.concat(tags, ", "))
+                        end
                         
                         local grid_column = vb:column {
                             spacing = 5,
@@ -3529,6 +3536,9 @@ local function create_symbol_editor_dialog()
                                         margin = 3,
                                         style = "panel"
                                     }
+
+                                    print("DEBUG: Creating symbol column for " .. symbol .. ", category_view_enabled=" .. tostring(category_view_enabled))
+                                    
                                     
                                     -- Add placement button if symbol exists, otherwise show disabled text
                                     if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
@@ -3592,6 +3602,68 @@ local function create_symbol_editor_dialog()
                                                 align = "center"
                                             }
                                         )
+                                    end
+                                    
+                                    -- Add tag display below note info (when not in tag editing mode)
+                                    if not category_view_enabled then
+                                        -- Check if symbol exists in global registry first
+                                        if global_symbol_registry[symbol] then
+                                            local current_tags = get_symbol_tags(symbol)
+                                            print("DEBUG: Symbol " .. symbol .. " tags check in display - found " .. (#current_tags or 0) .. " tags")
+                                            if current_tags and #current_tags > 0 then
+                                                -- Filter out empty tags and format
+                                                local non_empty_tags = {}
+                                                for _, tag in ipairs(current_tags) do
+                                                    if tag and tag ~= "" then
+                                                        table.insert(non_empty_tags, tag)
+                                                    end
+                                                end
+                                                
+                                                if #non_empty_tags > 0 then
+                                                    local tags_text = table.concat(non_empty_tags, ", ")
+                                                    print("DEBUG: Adding tags display for " .. symbol .. ": " .. tags_text)
+                                                    symbol_col:add_child(vb:space { height = 2 })
+                                                    symbol_col:add_child(
+                                                        vb:text {
+                                                            text = tags_text,
+                                                            font = "mono",
+                                                            style = "disabled",
+                                                            align = "left"
+                                                        }
+                                                    )
+                                                end
+                                            else
+                                                print("DEBUG: Symbol " .. symbol .. " has no non-empty tags to display")
+                                            end
+                                        else
+                                            print("DEBUG: Symbol " .. symbol .. " not found in global registry")
+                                        end
+                                    end
+                                    
+                                    -- Add tag display below note info (when not in tag editing mode)
+                                    if not category_view_enabled then
+                                        -- Check if symbol exists in global registry first
+                                        if global_symbol_registry[symbol] then
+                                            local current_tags = get_symbol_tags(symbol)
+                                            print("DEBUG: Symbol " .. symbol .. " tags check - found " .. (#current_tags or 0) .. " tags")
+                                            if current_tags and #current_tags > 0 then
+                                                local tags_text = table.concat(current_tags, ", ")
+                                                print("DEBUG: Adding tags display for " .. symbol .. ": " .. tags_text)
+                                                symbol_col:add_child(vb:space { height = 2 })
+                                                symbol_col:add_child(
+                                                    vb:text {
+                                                        text = tags_text,
+                                                        font = "mono",
+                                                        style = "disabled",
+                                                        align = "left"
+                                                    }
+                                                )
+                                            else
+                                                print("DEBUG: Symbol " .. symbol .. " has no tags to display")
+                                            end
+                                        else
+                                            print("DEBUG: Symbol " .. symbol .. " not found in global registry")
+                                        end
                                     end
                                     
                                     -- NEW: Add color UI row (before tags)
@@ -3914,6 +3986,14 @@ function show_main_dialog()
     else
         -- Ensure tag editing states are up to date
         initialize_tag_editing_states()
+    end
+    
+    -- Debug: Check registry state right before dialog creation
+    print("DEBUG: show_main_dialog - global_symbol_registry has " .. table.count(global_symbol_registry) .. " symbols")
+    for symbol, symbol_data in pairs(global_symbol_registry) do
+        if symbol_data.tags and #symbol_data.tags > 0 then
+            print("DEBUG: Symbol " .. symbol .. " has tags: " .. table.concat(symbol_data.tags, ", "))
+        end
     end
     
     -- Initialize editor when dialog is shown (safe because song exists)
