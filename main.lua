@@ -297,6 +297,120 @@ function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels
     return available
 end
 
+function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels)
+    local num_symbols_needed = #break_sets
+    local available = find_next_available_symbols(num_symbols_needed)
+    
+    if #available < num_symbols_needed then
+        return nil, string.format("Not enough available symbols. Need %d, only %d available.", 
+            num_symbols_needed, #available)
+    end
+    
+    -- Assign symbols to this instrument
+    for i = 1, num_symbols_needed do
+        local symbol = available[i]
+        global_symbol_registry[symbol] = {
+            instrument_index = instrument_index,
+            break_set = break_sets[i],
+            saved_labels = saved_labels,
+            tags = {},      -- Initialize empty tags array
+            color = ""      -- Initialize empty color
+        }
+    end
+    
+    return available
+end
+
+-- Get available symbols for moving (excluding the current symbol)
+function get_available_symbols_for_moving(current_symbol)
+    local available = {"Select target..."}  -- Default option
+    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+    
+    for _, symbol in ipairs(all_symbols) do
+        -- Only include symbols that are not currently in use and not the current symbol
+        if symbol ~= current_symbol and not global_symbol_registry[symbol] then
+            table.insert(available, symbol)
+        end
+    end
+    
+    return available
+end
+
+-- Move symbol to a new position
+function move_symbol_to_position(from_symbol, to_symbol, vb)
+    if not global_symbol_registry[from_symbol] then
+        renoise.app():show_warning("Source symbol " .. from_symbol .. " not found in registry")
+        return false
+    end
+    
+    if global_symbol_registry[to_symbol] then
+        renoise.app():show_warning("Target symbol " .. to_symbol .. " is already in use")
+        return false
+    end
+    
+    if from_symbol == to_symbol then
+        renoise.app():show_warning("Cannot move symbol to itself")
+        return false
+    end
+    
+    print("DEBUG: Moving symbol from " .. from_symbol .. " to " .. to_symbol)
+    
+    -- Deep copy symbol data to new position
+    global_symbol_registry[to_symbol] = {}
+    for key, value in pairs(global_symbol_registry[from_symbol]) do
+        if type(value) == "table" then
+            global_symbol_registry[to_symbol][key] = {}
+            for k, v in pairs(value) do
+                if type(v) == "table" then
+                    global_symbol_registry[to_symbol][key][k] = {}
+                    for k2, v2 in pairs(v) do
+                        global_symbol_registry[to_symbol][key][k][k2] = v2
+                    end
+                else
+                    global_symbol_registry[to_symbol][key][k] = v
+                end
+            end
+        else
+            global_symbol_registry[to_symbol][key] = value
+        end
+    end
+    
+    -- Copy editing states to new position
+    if tag_editing_states[from_symbol] then
+        tag_editing_states[to_symbol] = {}
+        for k, v in pairs(tag_editing_states[from_symbol]) do
+            tag_editing_states[to_symbol][k] = v
+        end
+    end
+    if color_editing_states[from_symbol] then
+        color_editing_states[to_symbol] = color_editing_states[from_symbol]
+    end
+    
+    -- Remove from old position
+    global_symbol_registry[from_symbol] = nil
+    
+    -- Clear symbol button reference for old position
+    if symbol_button_refs[from_symbol] then
+        symbol_button_refs[from_symbol] = nil
+    end
+    
+    -- Clear editing states for old position
+    if tag_editing_states[from_symbol] then
+        tag_editing_states[from_symbol] = nil
+    end
+    if color_editing_states[from_symbol] then
+        color_editing_states[from_symbol] = nil
+    end
+    
+    -- Save to preferences
+    save_global_symbol_registry()
+    
+    renoise.app():show_status("Symbol " .. from_symbol .. " moved to " .. to_symbol)
+    print("DEBUG: Symbol move completed successfully")
+    
+    return true
+end
+
 function get_symbol_instrument_mapping(symbol)
     local registry_entry = global_symbol_registry[symbol]
     return registry_entry and registry_entry.instrument_index or nil
@@ -304,6 +418,11 @@ end
 
 -- Tag system functions
 function toggle_tag_view(vb)
+    -- Preserve any unsaved tag inputs before toggling
+    if current_dialog_vb then
+        preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+    end
+    
     category_view_enabled = not category_view_enabled  -- Keep same variable name for UI compatibility
     
     -- Update toggle button text
@@ -311,7 +430,17 @@ function toggle_tag_view(vb)
         vb.views.category_toggle.text = category_view_enabled and "…" or "≡"
     end
     
-    -- Update visibility of all tag rows and color rows
+    -- If toggling OFF, refresh the dialog to show updated tag displays
+    if not category_view_enabled then
+        print("DEBUG: Tag view toggled off - refreshing dialog to update tag displays")
+        if dialog and dialog.visible then
+            dialog:close()
+            show_main_dialog()
+        end
+        return
+    end
+    
+    -- Update visibility of all tag rows and color rows (only when toggling ON)
     for _, symbol in ipairs(available_symbols) do
         -- Update visibility of tag container
         local tag_container = vb.views["tag_container_" .. symbol]
@@ -334,14 +463,36 @@ function toggle_organize_view(vb)
     
     -- Update toggle button text
     if vb.views.organize_toggle then
-        vb.views.organize_toggle.text = organize_view_enabled and "꙱" or "§"
+        vb.views.organize_toggle.text = organize_view_enabled and "▬" or "§"
     end
     
-    -- Update visibility of all organize rows
+    -- Update visibility of all organize elements
     for _, symbol in ipairs(available_symbols) do
+        -- Update move row visibility
+        local move_row = vb.views["move_row_" .. symbol]
+        if move_row then
+            move_row.visible = organize_view_enabled
+        end
+        
+        -- Update delete row visibility
+        local delete_row = vb.views["delete_row_" .. symbol]
+        if delete_row then
+            delete_row.visible = organize_view_enabled
+        end
+        
+        -- Update organize row visibility (for empty symbols)
         local organize_row = vb.views["organize_row_" .. symbol]
         if organize_row then
             organize_row.visible = organize_view_enabled
+        end
+        
+        -- Refresh dropdown options when organize view is enabled
+        if organize_view_enabled then
+            local dropdown = vb.views["move_dropdown_" .. symbol]
+            if dropdown then
+                dropdown.items = get_available_symbols_for_moving(symbol)
+                dropdown.value = 1  -- Reset to "Select target..."
+            end
         end
     end
     
@@ -449,7 +600,7 @@ function save_symbol_tag(symbol, tag_index, tag_text, vb)
         update_tag_ui_state(symbol, tag_index, has_tag, tag_text, vb)
     end
     
-    -- Persist to preferences
+    -- Persist to preferences immediately
     save_global_symbol_registry()
     
     print("DEBUG: Saved tag " .. tag_index .. " '" .. (tag_text or "") .. "' for symbol " .. symbol)
@@ -458,6 +609,10 @@ function save_symbol_tag(symbol, tag_index, tag_text, vb)
         ("Tag saved for symbol " .. symbol .. ": " .. tag_text) or
         ("Tag cleared for symbol " .. symbol)
     renoise.app():show_status(status_msg)
+    
+    -- If category view is enabled, also update the display outside editing mode
+    -- This ensures consistency between editing and display states
+    print("DEBUG: Tag saved successfully for symbol " .. symbol .. ", registry updated")
     
     return true
 end
@@ -594,6 +749,7 @@ function update_tag_button_states(symbol, vb)
 end
 
 function preserve_unsaved_tag_inputs(symbol, vb)
+    print("DEBUG: preserve_unsaved_tag_inputs called for " .. (symbol or "ALL symbols"))
     if symbol then
         -- Preserve specific symbol
         preserve_single_symbol_tag_inputs(symbol, vb)
@@ -603,6 +759,9 @@ function preserve_unsaved_tag_inputs(symbol, vb)
             preserve_single_symbol_tag_inputs(sym, vb)
         end
     end
+    -- Ensure changes are persisted immediately
+    save_global_symbol_registry()
+    print("DEBUG: preserve_unsaved_tag_inputs completed, registry saved")
 end
 
 function preserve_single_symbol_tag_inputs(symbol, vb)
@@ -613,6 +772,7 @@ function preserve_single_symbol_tag_inputs(symbol, vb)
         global_symbol_registry[symbol].tags = {}
     end
     
+    local preserved_count = 0
     for i = 1, tag_count do
         local tag_field = vb.views["tag_field_" .. symbol .. "_" .. i]
         if tag_field and tag_field.visible then
@@ -625,9 +785,15 @@ function preserve_single_symbol_tag_inputs(symbol, vb)
                 if not tag_editing_states[symbol] then
                     tag_editing_states[symbol] = {}
                 end
-                tag_editing_states[symbol][i] = false
+                tag_editing_states[symbol][i] = true  -- Mark as saved, not editing
+                preserved_count = preserved_count + 1
+                print("DEBUG: Preserved tag " .. i .. " for symbol " .. symbol .. ": '" .. current_text .. "'")
             end
         end
+    end
+    
+    if preserved_count > 0 then
+        print("DEBUG: Preserved " .. preserved_count .. " unsaved tag inputs for symbol " .. symbol)
     end
 end
 
@@ -3488,7 +3654,7 @@ local function create_symbol_editor_dialog()
                     },
                     vb:button {
                         id = "organize_toggle",
-                        text = organize_view_enabled and "꙱" or "§",
+                        text = organize_view_enabled and "▬" or "§",
                         width = 25,
                         height = 25,
                         tooltip = "Toggle organize view",
@@ -3688,12 +3854,12 @@ local function create_symbol_editor_dialog()
                                         )
                                     end
                                     
-                                    -- Add tag display below note info (when not in tag editing mode)
+-- Add tag display below note info (when not in tag editing mode)
                                     if not category_view_enabled then
                                         -- Check if symbol exists in global registry first
                                         if global_symbol_registry[symbol] then
                                             local current_tags = get_symbol_tags(symbol)
-                                            print("DEBUG: Symbol " .. symbol .. " tags check in display - found " .. (#current_tags or 0) .. " tags")
+                                            print("DEBUG: Symbol " .. symbol .. " tags check - found " .. (#current_tags or 0) .. " tags")
                                             if current_tags and #current_tags > 0 then
                                                 -- Filter out empty tags and format
                                                 local non_empty_tags = {}
@@ -3707,43 +3873,62 @@ local function create_symbol_editor_dialog()
                                                     local tags_text = table.concat(non_empty_tags, ", ")
                                                     print("DEBUG: Adding tags display for " .. symbol .. ": " .. tags_text)
                                                     symbol_col:add_child(vb:space { height = 2 })
-                                                    symbol_col:add_child(
-                                                        vb:text {
-                                                            text = tags_text,
-                                                            font = "mono",
-                                                            style = "disabled",
-                                                            align = "left"
-                                                        }
-                                                    )
+                                                    
+                                                    -- Split long text into multiple lines manually
+                                                    local max_chars_per_line = 16  -- Approximate characters that fit in symbol column
+                                                    if #tags_text <= max_chars_per_line then
+                                                        -- Short text - single line
+                                                        symbol_col:add_child(
+                                                            vb:text {
+                                                                text = tags_text,
+                                                                font = "mono",
+                                                                style = "disabled",
+                                                                align = "left"
+                                                            }
+                                                        )
+                                                    else
+                                                        -- Long text - split into multiple lines
+                                                        local words = {}
+                                                        for word in tags_text:gmatch("[^, ]+") do
+                                                            table.insert(words, word)
+                                                        end
+                                                        
+                                                        local current_line = ""
+                                                        for i, word in ipairs(words) do
+                                                            local test_line = current_line == "" and word or (current_line .. ", " .. word)
+                                                            if #test_line <= max_chars_per_line then
+                                                                current_line = test_line
+                                                            else
+                                                                -- Add current line and start new one
+                                                                if current_line ~= "" then
+                                                                    symbol_col:add_child(
+                                                                        vb:text {
+                                                                            text = current_line,
+                                                                            font = "mono",
+                                                                            style = "disabled",
+                                                                            align = "left"
+                                                                        }
+                                                                    )
+                                                                end
+                                                                current_line = word
+                                                            end
+                                                        end
+                                                        
+                                                        -- Add final line if any
+                                                        if current_line ~= "" then
+                                                            symbol_col:add_child(
+                                                                vb:text {
+                                                                    text = current_line,
+                                                                    font = "mono",
+                                                                    style = "disabled",
+                                                                    align = "left"
+                                                                }
+                                                            )
+                                                        end
+                                                    end
                                                 end
                                             else
                                                 print("DEBUG: Symbol " .. symbol .. " has no non-empty tags to display")
-                                            end
-                                        else
-                                            print("DEBUG: Symbol " .. symbol .. " not found in global registry")
-                                        end
-                                    end
-                                    
-                                    -- Add tag display below note info (when not in tag editing mode)
-                                    if not category_view_enabled then
-                                        -- Check if symbol exists in global registry first
-                                        if global_symbol_registry[symbol] then
-                                            local current_tags = get_symbol_tags(symbol)
-                                            print("DEBUG: Symbol " .. symbol .. " tags check - found " .. (#current_tags or 0) .. " tags")
-                                            if current_tags and #current_tags > 0 then
-                                                local tags_text = table.concat(current_tags, ", ")
-                                                print("DEBUG: Adding tags display for " .. symbol .. ": " .. tags_text)
-                                                symbol_col:add_child(vb:space { height = 2 })
-                                                symbol_col:add_child(
-                                                    vb:text {
-                                                        text = tags_text,
-                                                        font = "mono",
-                                                        style = "disabled",
-                                                        align = "left"
-                                                    }
-                                                )
-                                            else
-                                                print("DEBUG: Symbol " .. symbol .. " has no tags to display")
                                             end
                                         else
                                             print("DEBUG: Symbol " .. symbol .. " not found in global registry")
@@ -3850,37 +4035,92 @@ local function create_symbol_editor_dialog()
                                     -- Update button states after container is created
                                     update_tag_button_states(symbol, vb)
                                     
-                                    -- NEW: Add organize UI row (delete button)
-                                    local organize_row = vb:row {
-                                        id = "organize_row_" .. symbol,
-                                        visible = organize_view_enabled,
-                                        spacing = 2,
-                                        width = 102,  -- Fixed width to match tag rows
-                                        
-                                        -- Only show delete button if symbol exists in global registry
-                                        (function()
-                                            if global_symbol_registry[symbol] then
-                                                return vb:button {
-                                                    text = "Delete",
-                                                    width = 102,
-                                                    height = 20,
-                                                    color = {0x80, 0x00, 0x00}, -- Dark red color to indicate destructive action
-                                                    tooltip = "Delete symbol " .. symbol .. " permanently",
-                                                    notifier = function()
-                                                        delete_symbol(symbol, vb)
+                                    -- NEW: Add organize UI rows (move controls and delete button)
+                                    if global_symbol_registry[symbol] then
+                                        -- Move controls row (dropdown + lock button)
+                                        local move_row = vb:row {
+                                            id = "move_row_" .. symbol,
+                                            visible = organize_view_enabled,
+                                            spacing = 2,
+                                            width = 102,
+                                            
+                                            -- Move to dropdown
+                                            vb:popup {
+                                                id = "move_dropdown_" .. symbol,
+                                                width = 75,
+                                                height = 20,
+                                                items = get_available_symbols_for_moving(symbol),
+                                                value = 1  -- Default to "Select target..."
+                                            },
+                                            
+                                            -- Lock/execute move button
+                                            vb:button {
+                                                id = "move_lock_" .. symbol,
+                                                text = "→",
+                                                width = 25,
+                                                height = 20,
+                                                tooltip = "Move symbol " .. symbol .. " to selected position",
+                                                notifier = function()
+                                                    local dropdown = vb.views["move_dropdown_" .. symbol]
+                                                    if dropdown and dropdown.value > 1 then
+                                                        local target_symbol = dropdown.items[dropdown.value]
+                                                        local success = move_symbol_to_position(symbol, target_symbol, vb)
+                                                        if success then
+                                                            -- Preserve unsaved tag inputs before refresh
+                                                            if current_dialog_vb then
+                                                                preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+                                                            end
+                                                            -- Refresh dialog to show new positions
+                                                            if dialog and dialog.visible then
+                                                                dialog:close()
+                                                                show_main_dialog()
+                                                            end
+                                                        end
+                                                    else
+                                                        renoise.app():show_warning("Please select a target symbol first")
                                                     end
-                                                }
-                                            else
-                                                return vb:text {
-                                                    text = "",
-                                                    width = 102,
-                                                    height = 20
-                                                }
-                                            end
-                                        end)()
-                                    }
-                                    
-                                    symbol_col:add_child(organize_row)
+                                                end
+                                            }
+                                        }
+                                        
+                                        symbol_col:add_child(move_row)
+                                        
+                                        -- Delete button row
+                                        local delete_row = vb:row {
+                                            id = "delete_row_" .. symbol,
+                                            visible = organize_view_enabled,
+                                            spacing = 2,
+                                            width = 102,
+                                            
+                                            vb:button {
+                                                text = "Delete",
+                                                width = 102,
+                                                height = 20,
+                                                color = {0x80, 0x00, 0x00}, -- Dark red color to indicate destructive action
+                                                tooltip = "Delete symbol " .. symbol .. " permanently",
+                                                notifier = function()
+                                                    delete_symbol(symbol, vb)
+                                                end
+                                            }
+                                        }
+                                        
+                                        symbol_col:add_child(delete_row)
+                                    else
+                                        -- Empty placeholder for symbols that don't exist
+                                        local empty_organize_row = vb:column {
+                                            id = "organize_row_" .. symbol,
+                                            visible = organize_view_enabled,
+                                            width = 102,
+                                            height = 42,  -- Height for both move and delete rows
+                                            vb:text {
+                                                text = "",
+                                                width = 102,
+                                                height = 42
+                                            }
+                                        }
+                                        
+                                        symbol_col:add_child(empty_organize_row)
+                                    end
                                     
                                     table.insert(row_columns, symbol_col)
                                 else
