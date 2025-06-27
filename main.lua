@@ -74,6 +74,9 @@ local category_view_enabled = false  -- Toggle state for ≡/… button (keep sa
 local tag_editing_states = {}       -- Track which symbols have saved tags: symbol -> {tag_index -> boolean}
 local color_editing_states = {}     -- Track which symbols have saved colors: symbol -> boolean
 
+-- Organize system state
+local organize_view_enabled = false  -- Toggle state for §/꙱ button (default off)
+
 -- Global symbol registry for cross-instrument symbol management
 local global_symbol_registry = {}
 local available_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -324,6 +327,77 @@ function toggle_tag_view(vb)
     end
     
     print("DEBUG: Tag view toggled to " .. (category_view_enabled and "enabled" or "disabled"))
+end
+
+function toggle_organize_view(vb)
+    organize_view_enabled = not organize_view_enabled
+    
+    -- Update toggle button text
+    if vb.views.organize_toggle then
+        vb.views.organize_toggle.text = organize_view_enabled and "꙱" or "§"
+    end
+    
+    -- Update visibility of all organize rows
+    for _, symbol in ipairs(available_symbols) do
+        local organize_row = vb.views["organize_row_" .. symbol]
+        if organize_row then
+            organize_row.visible = organize_view_enabled
+        end
+    end
+    
+    print("DEBUG: Organize view toggled to " .. (organize_view_enabled and "enabled" or "disabled"))
+end
+
+function delete_symbol(symbol, vb)
+    -- Check if symbol exists in global registry
+    if not global_symbol_registry[symbol] then
+        renoise.app():show_warning("Symbol " .. symbol .. " not found in registry")
+        return false
+    end
+    
+    -- Show confirmation dialog
+    local result = renoise.app():show_prompt("Delete Symbol", 
+        "This will permanently delete symbol '" .. symbol .. "' and all its data.\n\nAre you sure you want to continue?", 
+        {"Delete", "Cancel"})
+    
+    if result == "Delete" then
+        -- Remove symbol from global registry
+        global_symbol_registry[symbol] = nil
+        
+        -- Clear symbol button reference
+        if symbol_button_refs[symbol] then
+            symbol_button_refs[symbol] = nil
+        end
+        
+        -- Clear tag editing state
+        if tag_editing_states[symbol] then
+            tag_editing_states[symbol] = nil
+        end
+        
+        -- Clear color editing state
+        if color_editing_states[symbol] then
+            color_editing_states[symbol] = nil
+        end
+        
+        -- Save to preferences
+        save_global_symbol_registry()
+        
+        renoise.app():show_status("Symbol " .. symbol .. " deleted successfully")
+        
+        -- Refresh the dialog to update the UI
+        if dialog and dialog.visible then
+            -- Preserve all unsaved tag inputs before refresh
+            if current_dialog_vb then
+                preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+            end
+            dialog:close()
+            show_main_dialog()
+        end
+        
+        return true
+    end
+    
+    return false
 end
 
 function get_symbol_tags(symbol)
@@ -3399,7 +3473,7 @@ local function create_symbol_editor_dialog()
                 width = 500,
 
                 
-                -- Right column header with collapse and category toggle buttons
+                -- Right column header with collapse, category toggle, and organize toggle buttons
                 vb:row {
                     spacing = 5,
                     vb:button {
@@ -3410,6 +3484,16 @@ local function create_symbol_editor_dialog()
                         tooltip = "Toggle tag view",
                         notifier = function()
                             toggle_tag_view(vb)
+                        end
+                    },
+                    vb:button {
+                        id = "organize_toggle",
+                        text = organize_view_enabled and "꙱" or "§",
+                        width = 25,
+                        height = 25,
+                        tooltip = "Toggle organize view",
+                        notifier = function()
+                            toggle_organize_view(vb)
                         end
                     },
                     vb:horizontal_aligner {
@@ -3765,6 +3849,38 @@ local function create_symbol_editor_dialog()
                                     
                                     -- Update button states after container is created
                                     update_tag_button_states(symbol, vb)
+                                    
+                                    -- NEW: Add organize UI row (delete button)
+                                    local organize_row = vb:row {
+                                        id = "organize_row_" .. symbol,
+                                        visible = organize_view_enabled,
+                                        spacing = 2,
+                                        width = 102,  -- Fixed width to match tag rows
+                                        
+                                        -- Only show delete button if symbol exists in global registry
+                                        (function()
+                                            if global_symbol_registry[symbol] then
+                                                return vb:button {
+                                                    text = "Delete",
+                                                    width = 102,
+                                                    height = 20,
+                                                    color = {0x80, 0x00, 0x00}, -- Dark red color to indicate destructive action
+                                                    tooltip = "Delete symbol " .. symbol .. " permanently",
+                                                    notifier = function()
+                                                        delete_symbol(symbol, vb)
+                                                    end
+                                                }
+                                            else
+                                                return vb:text {
+                                                    text = "",
+                                                    width = 102,
+                                                    height = 20
+                                                }
+                                            end
+                                        end)()
+                                    }
+                                    
+                                    symbol_col:add_child(organize_row)
                                     
                                     table.insert(row_columns, symbol_col)
                                 else
