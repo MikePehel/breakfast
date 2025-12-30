@@ -1,4 +1,4 @@
--- main.lua - BreakFast Main Entry Point (Phase 2: Audio Preview & Breakpoints from Selection)
+-- main.lua - BreakFast Main Entry Point (Phase 5: Multi-Track Support)
 local vb = renoise.ViewBuilder()
 local labeler = require("labeler")
 local breakpoints = require("breakpoints")
@@ -62,6 +62,15 @@ local instrument_source_behavior = {
 }
 
 local current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
+
+-- Phase 5: Multi-track distance mode constants and state
+local multi_track_distance_mode = {
+    SYNC_FIRST = 1,    -- Sync all tracks to first track's cutoff distance (shortest)
+    INDEPENDENT = 2,   -- Each track calculates its own distance independently
+    SYNC_LAST = 3      -- Sync all tracks to last track's cutoff distance (longest, no extra notes captured)
+}
+
+local current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
 
 -- Input lock state and callback
 local input_lock_active = false
@@ -970,13 +979,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- â•”
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- â•—
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- â•
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- â”‚
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- â”œ
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- â”¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- â”€
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- Ã¢â€¢â€
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- Ã¢â€¢â€”
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- Ã¢â€¢Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- Ã¢â€â€š
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- Ã¢â€Å“
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- Ã¢â€Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- Ã¢â€â‚¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -1015,6 +1024,27 @@ function format_detailed_symbol_info(symbol)
         end
         table.insert(info_lines, BOX_V .. " Source: Pattern " .. pattern_idx .. ", Track " .. track_idx)
         
+        -- Phase 5: Show multi-track info if this is a multi-track symbol
+        local is_multi_track = src.is_multi_track or (break_set and break_set.is_multi_track)
+        local track_count = src.track_count or (break_set and break_set.track_count) or 1
+        
+        if is_multi_track and track_count > 1 then
+            local track_names = src.track_names or break_set.track_names or {}
+            local track_info = string.format(" Tracks: %d", track_count)
+            if #track_names > 0 then
+                -- Show first few track names
+                local names_preview = {}
+                for i = 1, math.min(3, #track_names) do
+                    table.insert(names_preview, track_names[i]:sub(1, 8))
+                end
+                if #track_names > 3 then
+                    table.insert(names_preview, "...")
+                end
+                track_info = track_info .. " (" .. table.concat(names_preview, ", ") .. ")"
+            end
+            table.insert(info_lines, BOX_V .. track_info)
+        end
+        
         -- Capture timestamp
         if src.capture_info and src.capture_info.capture_timestamp then
             table.insert(info_lines, BOX_V .. " Captured: " .. src.capture_info.capture_timestamp)
@@ -1042,6 +1072,7 @@ function format_detailed_symbol_info(symbol)
     local total_distance = 0
     local unique_instruments = {}
     local unique_notes = {}
+    local unique_tracks = {}  -- Phase 5: Track unique tracks
     
     if note_count > 0 then
         min_line = break_set.timing[1].relative_line or 1
@@ -1065,6 +1096,10 @@ function format_detailed_symbol_info(symbol)
             if note_val then
                 unique_notes[note_val] = true
             end
+            
+            -- Phase 5: Track unique track offsets
+            local track_offset = timing.track_offset or 0
+            unique_tracks[track_offset] = true
         end
     end
     
@@ -1092,6 +1127,11 @@ function format_detailed_symbol_info(symbol)
     
     -- List individual notes (limit to first 6 for space)
     local max_notes_to_show = 6
+    -- Phase 5: Check if this is a multi-track symbol for display purposes
+    local is_multi_track_symbol = break_set.is_multi_track or 
+                                   (symbol_data.source_metadata and symbol_data.source_metadata.is_multi_track) or
+                                   (break_set.track_count and break_set.track_count > 1)
+    
     for i, timing in ipairs(break_set.timing) do
         if i > max_notes_to_show then
             table.insert(info_lines, BOX_V .. string.format("   ... +%d more", note_count - max_notes_to_show))
@@ -1105,19 +1145,26 @@ function format_detailed_symbol_info(symbol)
         local vol = timing.volume_value
         local pan = timing.panning_value
         local dist = timing.original_distance or 0
+        local track_offset = timing.track_offset or 0  -- Phase 5
         
         -- Convert note value to note name
         local octave = math.floor(note_val / 12)
         local note_index = (note_val % 12) + 1
         local note_name = note_names[note_index] .. octave
         
-        -- Format: L01 C-4 I11 V-- P-- d00 Dist:2048
+        -- Format: L01 C-4 I11 V-- P-- d00 Dist:2048 [+T0]
         local vol_str = (vol and vol ~= 255 and vol ~= 0xFF) and string.format("%02X", vol) or "--"
         local pan_str = (pan and pan ~= 255 and pan ~= 0xFF) and string.format("%02X", pan) or "--"
         local inst_str = string.format("%02X", inst_val)
         
-        table.insert(info_lines, BOX_V .. string.format(" L%02d %s I%s V%s P%s d%02X Dist:%d", 
-            line, note_name, inst_str, vol_str, pan_str, delay, dist))
+        -- Phase 5: Include track offset for multi-track symbols
+        if is_multi_track_symbol then
+            table.insert(info_lines, BOX_V .. string.format(" L%02d %s I%s V%s d%02X +T%d", 
+                line, note_name, inst_str, vol_str, delay, track_offset))
+        else
+            table.insert(info_lines, BOX_V .. string.format(" L%02d %s I%s V%s P%s d%02X Dist:%d", 
+                line, note_name, inst_str, vol_str, pan_str, delay, dist))
+        end
     end
     
     -- === STATISTICS SECTION ===
@@ -2920,8 +2967,21 @@ function export_global_alphabet_json()
             symbol_entry.source_metadata = {
                 pattern_index = symbol_data.source_metadata.pattern_index,
                 track_index = symbol_data.source_metadata.track_index,
-                capture_info = symbol_data.source_metadata.capture_info
+                capture_info = symbol_data.source_metadata.capture_info,
+                -- Phase 5: Multi-track metadata
+                track_count = symbol_data.source_metadata.track_count,
+                first_track_index = symbol_data.source_metadata.first_track_index,
+                track_names = symbol_data.source_metadata.track_names,
+                is_multi_track = symbol_data.source_metadata.is_multi_track
             }
+        end
+        
+        -- Phase 5: Add break_set level multi-track metadata
+        if break_set then
+            symbol_entry.track_count = break_set.track_count
+            symbol_entry.first_track_index = break_set.first_track_index
+            symbol_entry.track_names = break_set.track_names
+            symbol_entry.is_multi_track = break_set.is_multi_track
         end
         
         -- Add saved labels for both breakpoint and range symbols (range symbols can now have labels too)
@@ -3001,7 +3061,10 @@ function export_global_alphabet_json()
                     note_columns = timing.note_columns or {},
                     -- NEW: Enhanced content information
                     has_note = timing.has_note or false,
-                    content_type = timing.content_type or "note"
+                    content_type = timing.content_type or "note",
+                    -- Phase 5: Multi-track information
+                    track_index = timing.track_index,
+                    track_offset = timing.track_offset or 0
                 })
             end
         end
@@ -3736,6 +3799,12 @@ function import_global_alphabet_json()
                             timing_entry.has_note = entry.has_note or false
                             timing_entry.content_type = entry.content_type or "note"
                             
+                            -- Phase 5: Add multi-track information
+                            if entry.track_index then
+                                timing_entry.track_index = entry.track_index
+                            end
+                            timing_entry.track_offset = entry.track_offset or 0
+                            
                             table.insert(timing_data, timing_entry)
                             
                             -- Create note entry
@@ -3781,8 +3850,18 @@ function import_global_alphabet_json()
             end
             
             -- Extract source_metadata for range-captured symbols
+            -- Phase 5: Include multi-track metadata
             if symbol_type == "range_captured" and symbol_data.source_metadata and type(symbol_data.source_metadata) == "table" then
-                source_metadata = symbol_data.source_metadata
+                source_metadata = {
+                    pattern_index = symbol_data.source_metadata.pattern_index,
+                    track_index = symbol_data.source_metadata.track_index,
+                    capture_info = symbol_data.source_metadata.capture_info,
+                    -- Phase 5: Multi-track metadata
+                    track_count = symbol_data.source_metadata.track_count,
+                    first_track_index = symbol_data.source_metadata.first_track_index,
+                    track_names = symbol_data.source_metadata.track_names,
+                    is_multi_track = symbol_data.source_metadata.is_multi_track
+                }
             end
             
             if #timing_data > 0 then
@@ -3799,6 +3878,20 @@ function import_global_alphabet_json()
                     local last_note = notes[#notes]
                     local distance_in_lines = math.floor(last_note.distance / 256)
                     break_set.end_line = last_note.line + distance_in_lines + 4 -- Add buffer
+                end
+                
+                -- Phase 5: Add multi-track metadata to break_set
+                if symbol_data.track_count then
+                    break_set.track_count = symbol_data.track_count
+                end
+                if symbol_data.first_track_index then
+                    break_set.first_track_index = symbol_data.first_track_index
+                end
+                if symbol_data.track_names then
+                    break_set.track_names = symbol_data.track_names
+                end
+                if symbol_data.is_multi_track then
+                    break_set.is_multi_track = symbol_data.is_multi_track
                 end
                 
                 -- Create registry entry with proper structure
@@ -4248,6 +4341,73 @@ local function create_compact_instrument_source_section(vb)
     }
 end
 
+-- Phase 5: Create compact multi-track distance section for collapsed view
+local function create_compact_multi_track_distance_section(vb)
+    return vb:column {
+        style = "group",
+        margin = 5,
+        width = 60,
+        vb:text {
+            text = "MT",
+            font = "bold",
+            style = "strong",
+            tooltip = "Multi-Track Distance Mode"
+        },
+        vb:space { height = 3 },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_mt_sync_first",
+                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST),
+                notifier = function(value)
+                    if value then
+                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
+                        vb.views.compact_mt_independent.value = false
+                        vb.views.compact_mt_sync_last.value = false
+                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST then
+                        vb.views.compact_mt_sync_first.value = true
+                    end
+                end
+            },
+            vb:text { text = "1", width = 10, tooltip = "Sync to First" }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_mt_independent",
+                value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT),
+                notifier = function(value)
+                    if value then
+                        current_multi_track_distance_mode = multi_track_distance_mode.INDEPENDENT
+                        vb.views.compact_mt_sync_first.value = false
+                        vb.views.compact_mt_sync_last.value = false
+                    elseif current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT then
+                        vb.views.compact_mt_independent.value = true
+                    end
+                end
+            },
+            vb:text { text = "I", width = 10, tooltip = "Independent" }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_mt_sync_last",
+                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST),
+                notifier = function(value)
+                    if value then
+                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_LAST
+                        vb.views.compact_mt_sync_first.value = false
+                        vb.views.compact_mt_independent.value = false
+                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST then
+                        vb.views.compact_mt_sync_last.value = true
+                    end
+                end
+            },
+            vb:text { text = "L", width = 10, tooltip = "Sync to Last" }
+        }
+    }
+end
+
 -- Toggle UI collapse state
 local function toggle_ui_collapse(vb)
     ui_collapsed = not ui_collapsed
@@ -4264,14 +4424,14 @@ local function toggle_ui_collapse(vb)
     if vb.views.full_behaviors_section then
         vb.views.full_behaviors_section.visible = not ui_collapsed
     end
-    if vb.views.break_string_section then
-        vb.views.break_string_section.visible = not ui_collapsed
-    end
-    if vb.views.composite_symbols_section then
-        vb.views.composite_symbols_section.visible = not ui_collapsed
-    end
     if vb.views.instrument_source_section then
         vb.views.instrument_source_section.visible = not ui_collapsed
+    end
+    if vb.views.multi_track_distance_section then
+        vb.views.multi_track_distance_section.visible = not ui_collapsed
+    end
+    if vb.views.break_composite_row then
+        vb.views.break_composite_row.visible = not ui_collapsed
     end
     if vb.views.compact_behaviors_section then
         vb.views.compact_behaviors_section.visible = ui_collapsed
@@ -5165,100 +5325,180 @@ local function create_symbol_editor_dialog()
                     }
                 },
 
-                -- Break string input with quick insert buttons (collapsible)
+                -- Phase 5: Multi-track distance mode section (collapsible)
                 vb:column {
-                    id = "break_string_section",
+                    id = "multi_track_distance_section",
                     visible = not ui_collapsed,
                     style = "group",
                     margin = 10,
+                    width = 430,
                     vb:text {
-                        text = "Break String",
-                        font = "big",
-                        style = "strong"
-                    },
-                    vb:space { height = 5 },
-                    vb:textfield {
-                        id = "break_string",
-                        width = 400,
-                        height = 25,
-                        text = ""
-                    },
-                    vb:space { height = 5 },
-                    vb:row {
-                        spacing = 5,
-                        vb:text {
-                            text = "Quick Insert:",
-                            style = "strong"
-                        },
-                        (function()
-                            -- Create quick insert buttons from global registry
-                            local available_symbols = {}
-                            for symbol, _ in pairs(current_formatted_labels) do
-                                table.insert(available_symbols, symbol)
-                            end
-                            table.sort(available_symbols)
-                            
-                            if #available_symbols > 0 then
-                                return vb:row {
-                                    spacing = 3,
-                                    unpack((function()
-                                        local buttons = {}
-                                        for i = 1, math.min(#available_symbols, 10) do
-                                            local symbol_letter = available_symbols[i]
-                                            table.insert(buttons, vb:button {
-                                                text = symbol_letter,
-                                                width = 30,
-                                                height = 20,
-                                                notifier = function()
-                                                    local break_string_view = vb.views.break_string
-                                                    if break_string_view then
-                                                        break_string_view.text = break_string_view.text .. symbol_letter
-                                                    end
-                                                end
-                                            })
-                                        end
-                                        return buttons
-                                    end)())
-                                }
-                            else
-                                return vb:text {
-                                    text = "No symbols available",
-                                    style = "disabled"
-                                }
-                            end
-                        end)()
-                    },
-                    vb:space { height = 3 },
-                    vb:text {
-                        text = "Tip: Assign keyboard shortcuts in Preferences > Keys > Global > Tools",
-                        style = "disabled"
-                    }
-                },
-
-                -- Composite symbols section (collapsible)
-                vb:column {
-                    id = "composite_symbols_section",
-                    visible = not ui_collapsed,
-                    style = "group",
-                    margin = 10,
-                    vb:text {
-                        text = "Composite Symbols",
+                        text = "Multi-Track Capture",
                         font = "big",
                         style = "strong"
                     },
                     vb:space { height = 5 },
                     vb:column {
-                        id = "composite_symbols",
-                        spacing = 3
+                        spacing = 3,
+                        vb:row {
+                            spacing = 10,
+                            vb:checkbox {
+                                id = "mt_sync_first",
+                                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST),
+                                notifier = function(value)
+                                    if value then
+                                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
+                                        vb.views.mt_independent.value = false
+                                        vb.views.mt_sync_last.value = false
+                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST then
+                                        vb.views.mt_sync_first.value = true
+                                    end
+                                end
+                            },
+                            vb:text {
+                                text = "Sync to First (shortest cutoff distance)",
+                                width = 350
+                            }
+                        },
+                        vb:row {
+                            spacing = 10,
+                            vb:checkbox {
+                                id = "mt_independent",
+                                value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT),
+                                notifier = function(value)
+                                    if value then
+                                        current_multi_track_distance_mode = multi_track_distance_mode.INDEPENDENT
+                                        vb.views.mt_sync_first.value = false
+                                        vb.views.mt_sync_last.value = false
+                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT then
+                                        vb.views.mt_independent.value = true
+                                    end
+                                end
+                            },
+                            vb:text {
+                                text = "Independent (each track uses own distance)",
+                                width = 350
+                            }
+                        },
+                        vb:row {
+                            spacing = 10,
+                            vb:checkbox {
+                                id = "mt_sync_last",
+                                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST),
+                                notifier = function(value)
+                                    if value then
+                                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_LAST
+                                        vb.views.mt_sync_first.value = false
+                                        vb.views.mt_independent.value = false
+                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST then
+                                        vb.views.mt_sync_last.value = true
+                                    end
+                                end
+                            },
+                            vb:text {
+                                text = "Sync to Last (longest cutoff, no extra notes)",
+                                width = 350
+                            }
+                        }
+                    }
+                },
+
+                -- Break String and Composite Symbols in a row (collapsible)
+                vb:row {
+                    id = "break_composite_row",
+                    visible = not ui_collapsed,
+                    spacing = 10,
+                    
+                    -- Break string input with quick insert buttons
+                    vb:column {
+                        id = "break_string_section",
+                        style = "group",
+                        margin = 10,
+                        width = 210,
+                        vb:text {
+                            text = "Break String",
+                            font = "big",
+                            style = "strong"
+                        },
+                        vb:space { height = 5 },
+                        vb:textfield {
+                            id = "break_string",
+                            width = 190,
+                            height = 25,
+                            text = ""
+                        },
+                        vb:space { height = 5 },
+                        vb:row {
+                            spacing = 3,
+                            vb:text {
+                                text = "Insert:",
+                                style = "strong"
+                            },
+                            (function()
+                                -- Create quick insert buttons from global registry
+                                local available_symbols = {}
+                                for symbol, _ in pairs(current_formatted_labels) do
+                                    table.insert(available_symbols, symbol)
+                                end
+                                table.sort(available_symbols)
+                                
+                                if #available_symbols > 0 then
+                                    return vb:row {
+                                        spacing = 2,
+                                        unpack((function()
+                                            local buttons = {}
+                                            for i = 1, math.min(#available_symbols, 6) do
+                                                local symbol_letter = available_symbols[i]
+                                                table.insert(buttons, vb:button {
+                                                    text = symbol_letter,
+                                                    width = 22,
+                                                    height = 20,
+                                                    notifier = function()
+                                                        local break_string_view = vb.views.break_string
+                                                        if break_string_view then
+                                                            break_string_view.text = break_string_view.text .. symbol_letter
+                                                        end
+                                                    end
+                                                })
+                                            end
+                                            return buttons
+                                        end)())
+                                    }
+                                else
+                                    return vb:text {
+                                        text = "None",
+                                        style = "disabled"
+                                    }
+                                end
+                            end)()
+                        }
                     },
-                    vb:button {
-                        id = "add_symbol_button",
-                        text = "+",
-                        width = 25,
-                        height = 25,
-                        notifier = function()
-                            add_composite_symbol(vb)
-                        end
+
+                    -- Composite symbols section
+                    vb:column {
+                        id = "composite_symbols_section",
+                        style = "group",
+                        margin = 10,
+                        width = 210,
+                        vb:text {
+                            text = "Composite Symbols",
+                            font = "big",
+                            style = "strong"
+                        },
+                        vb:space { height = 5 },
+                        vb:column {
+                            id = "composite_symbols",
+                            spacing = 3
+                        },
+                        vb:button {
+                            id = "add_symbol_button",
+                            text = "+",
+                            width = 25,
+                            height = 25,
+                            notifier = function()
+                                add_composite_symbol(vb)
+                            end
+                        }
                     }
                 },
 
@@ -5269,7 +5509,8 @@ local function create_symbol_editor_dialog()
                     spacing = 10,
                     create_compact_overflow_section(vb),
                     create_compact_overwrite_section(vb),
-                    create_compact_instrument_source_section(vb)
+                    create_compact_instrument_source_section(vb),
+                    create_compact_multi_track_distance_section(vb)
                 }
             },
             
@@ -6267,7 +6508,8 @@ function show_main_dialog()
     editor.initialize()
     
     -- Set up editor module references to main module functions (including global symbol registry)
-    editor.set_main_module_functions(get_overflow_behavior, get_overflow_behavior_constants, get_overwrite_behavior, get_overwrite_behavior_constants, get_instrument_source_behavior, get_instrument_source_behavior_constants, get_global_symbol_registry, get_symbol_instrument_mapping)
+    -- Phase 5: Added multi-track distance mode getters
+    editor.set_main_module_functions(get_overflow_behavior, get_overflow_behavior_constants, get_overwrite_behavior, get_overwrite_behavior_constants, get_instrument_source_behavior, get_instrument_source_behavior_constants, get_global_symbol_registry, get_symbol_instrument_mapping, get_multi_track_distance_mode, get_multi_track_distance_mode_constants)
 
     if dialog and dialog.visible then
         dialog:close()
@@ -6379,6 +6621,16 @@ end
 -- Get instrument source behavior constants for external access
 function get_instrument_source_behavior_constants()
     return instrument_source_behavior
+end
+
+-- Phase 5: Get multi-track distance mode for external access
+function get_multi_track_distance_mode()
+    return current_multi_track_distance_mode
+end
+
+-- Phase 5: Get multi-track distance mode constants for external access
+function get_multi_track_distance_mode_constants()
+    return multi_track_distance_mode
 end
 
 -- Set up labeler callback to refresh main dialog and provide global symbol functions

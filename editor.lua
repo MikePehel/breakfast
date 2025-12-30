@@ -13,7 +13,8 @@ local get_overwrite_behavior_constants = nil
 local get_global_symbol_registry = nil
 local get_symbol_instrument_mapping = nil
 
--- State management for chaining symbols (unchanged)
+-- State management for chaining symbols
+-- Phase 5: Added per-track state for Independent multi-track mode
 local placement_state = {
     current_track = nil,
     current_line = nil,
@@ -23,7 +24,11 @@ local placement_state = {
     is_chaining = false,
     -- New timing state for proper stitching
     last_symbol_timing = nil,  -- Store timing info from last placed symbol
-    cumulative_timing = {}     -- Track cumulative timing for stitching
+    cumulative_timing = {},    -- Track cumulative timing for stitching
+    -- Phase 5: Per-track state for Independent multi-track mode
+    per_track_next_lines = {},    -- track_offset -> next_placement_line
+    per_track_last_timings = {},  -- track_offset -> last_symbol_timing
+    is_independent_mode = false   -- Flag for independent mode placement
 }
 
 -- Observable notifiers and idle tracking (unchanged)
@@ -113,7 +118,8 @@ function editor.check_cursor_change()
     placement_state.last_cursor_position.line = current_line
 end
 
--- Reset placement state (unchanged)
+-- Reset placement state
+-- Phase 5: Also resets per-track state for Independent mode
 function editor.reset_placement_state()
     placement_state.current_track = nil
     placement_state.current_line = nil
@@ -122,10 +128,18 @@ function editor.reset_placement_state()
     placement_state.is_chaining = false
     placement_state.last_symbol_timing = nil
     placement_state.cumulative_timing = {}
+    -- Phase 5: Reset per-track state
+    placement_state.per_track_next_lines = {}
+    placement_state.per_track_last_timings = {}
+    placement_state.is_independent_mode = false
 end
 
 -- Set reference to main module functions
-function editor.set_main_module_functions(overflow_behavior_getter, overflow_constants_getter, overwrite_behavior_getter, overwrite_constants_getter, instrument_source_behavior_getter, instrument_source_constants_getter, symbol_registry_getter, symbol_instrument_mapper)
+-- Phase 5: Added multi-track distance mode getters
+local get_multi_track_distance_mode = nil
+local get_multi_track_distance_mode_constants = nil
+
+function editor.set_main_module_functions(overflow_behavior_getter, overflow_constants_getter, overwrite_behavior_getter, overwrite_constants_getter, instrument_source_behavior_getter, instrument_source_constants_getter, symbol_registry_getter, symbol_instrument_mapper, multi_track_distance_mode_getter, multi_track_distance_mode_constants_getter)
     get_overflow_behavior = overflow_behavior_getter
     get_overflow_behavior_constants = overflow_constants_getter
     -- Store overwrite behavior functions
@@ -137,6 +151,9 @@ function editor.set_main_module_functions(overflow_behavior_getter, overflow_con
     -- Store global symbol registry functions
     get_global_symbol_registry = symbol_registry_getter
     get_symbol_instrument_mapping = symbol_instrument_mapper
+    -- Phase 5: Store multi-track distance mode functions
+    get_multi_track_distance_mode = multi_track_distance_mode_getter
+    get_multi_track_distance_mode_constants = multi_track_distance_mode_constants_getter
 end
 
 -- Get break sets - now primarily for legacy compatibility and caching
@@ -331,7 +348,163 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
     return placement_info
 end
 
+-- Phase 5: Calculate placement positions for Independent multi-track mode
+-- Each track is treated independently with its own timing chain
+local function calculate_independent_placement_positions(break_set, cursor_line, per_track_next_lines, per_track_last_timings, symbol_type)
+    local placement_info = {
+        notes = {},
+        next_line = cursor_line,
+        last_note_distance = nil,
+        is_multi_track = break_set.is_multi_track or false,
+        track_count = break_set.track_count or 1,
+        -- Per-track state to return for chaining
+        per_track_next_lines = {},
+        per_track_last_timings = {}
+    }
+    
+    -- Group timing entries by track_offset
+    local timings_by_track = {}
+    for _, timing in ipairs(break_set.timing) do
+        local track_offset = timing.track_offset or 0
+        if not timings_by_track[track_offset] then
+            timings_by_track[track_offset] = {}
+        end
+        table.insert(timings_by_track[track_offset], timing)
+    end
+    
+    print("DEBUG: Independent mode - processing " .. #break_set.timing .. " notes across " .. placement_info.track_count .. " tracks")
+    
+    -- Process each track independently
+    for track_offset, track_timings in pairs(timings_by_track) do
+        -- Get the start line and last timing for this specific track
+        local track_start_line = per_track_next_lines[track_offset] or cursor_line
+        local track_last_timing = per_track_last_timings[track_offset]
+        
+        print("DEBUG: Track offset " .. track_offset .. " - start line: " .. track_start_line .. ", has previous timing: " .. tostring(track_last_timing ~= nil))
+        
+        -- Build a mini break_set for just this track's timings
+        local track_break_set = {
+            timing = track_timings,
+            is_multi_track = false,
+            track_count = 1
+        }
+        
+        -- Apply timing adjustment if we have previous timing for this track
+        local current_timings = track_timings
+        if track_last_timing then
+            local prev_delay = track_last_timing.new_delay
+            local delay_diff = 256 - prev_delay
+            local prev_distance = track_last_timing.original_distance
+            
+            local line_gap = math.floor((prev_distance - delay_diff) / 256)
+            local adjusted_delay = prev_distance - delay_diff - (line_gap * 256)
+            
+            -- Apply timing adjustment
+            local adjusted_set = apply_timing_adjustment(track_break_set, adjusted_delay, track_start_line)
+            current_timings = adjusted_set.timing
+        end
+        
+        local track_last_note_timing = nil
+        
+        -- Process each timing entry for this track
+        for i, timing in ipairs(current_timings) do
+            local original_timing = track_timings[i]  -- Get original for track_offset
+            
+            local target_line
+            if track_last_timing then
+                -- Chained - use the adjusted relative position
+                target_line = timing.relative_line
+            else
+                -- First symbol for this track - place relative to start line
+                target_line = track_start_line + timing.relative_line - 1
+            end
+            
+            -- Calculate note value based on symbol type
+            local note_value
+            if symbol_type == "range_captured" then
+                note_value = timing.note_value or 48
+            else
+                note_value = 36 + timing.instrument_value
+            end
+            
+            table.insert(placement_info.notes, {
+                line = target_line,
+                delay = timing.new_delay,
+                instrument_value = timing.instrument_value,
+                note_value = note_value,
+                source_instrument_index = timing.source_instrument_index,
+                original_distance = timing.original_distance,
+                has_note = timing.has_note or (note_value ~= renoise.PatternLine.EMPTY_NOTE),
+                content_type = timing.content_type or (timing.has_note and "note" or "effect"),
+                volume_value = timing.volume_value,
+                panning_value = timing.panning_value,
+                effect_number_value = timing.effect_number_value,
+                effect_amount_value = timing.effect_amount_value,
+                effect_columns = timing.effect_columns or {},
+                note_columns = {},  -- Don't copy note_columns for multi-track - each note is separate
+                track_index = timing.track_index,
+                track_offset = track_offset
+            })
+            
+            track_last_note_timing = timing
+        end
+        
+        -- Calculate next placement line for this track
+        if track_last_note_timing then
+            local distance_in_lines = math.floor(track_last_note_timing.original_distance / 256)
+            local distance_delay = track_last_note_timing.original_distance % 256
+            
+            local last_note_line
+            if track_last_timing then
+                last_note_line = track_last_note_timing.relative_line
+            else
+                last_note_line = track_start_line + track_last_note_timing.relative_line - 1
+            end
+            
+            local next_line_for_track = last_note_line + distance_in_lines
+            if track_last_note_timing.new_delay + distance_delay >= 256 then
+                next_line_for_track = next_line_for_track + 1
+            end
+            
+            placement_info.per_track_next_lines[track_offset] = next_line_for_track
+            placement_info.per_track_last_timings[track_offset] = track_last_note_timing
+            
+            print("DEBUG: Track offset " .. track_offset .. " - last note line: " .. last_note_line .. ", distance: " .. track_last_note_timing.original_distance .. ", next line: " .. next_line_for_track)
+        end
+    end
+    
+    -- Set global next_line to the maximum across all tracks (for pattern extension)
+    local max_next_line = cursor_line
+    for _, next_line in pairs(placement_info.per_track_next_lines) do
+        if next_line > max_next_line then
+            max_next_line = next_line
+        end
+    end
+    placement_info.next_line = max_next_line
+    
+    -- Set last_timing to track 0's timing for backward compatibility
+    placement_info.last_timing = placement_info.per_track_last_timings[0]
+    
+    -- Find last note distance (use the one with longest distance for pattern extension)
+    local max_distance_note = nil
+    for _, note in ipairs(placement_info.notes) do
+        if note.original_distance and (not max_distance_note or note.line > max_distance_note.line) then
+            max_distance_note = note
+        end
+    end
+    if max_distance_note then
+        placement_info.last_note_distance = {
+            line = max_distance_note.line,
+            delay = max_distance_note.delay,
+            original_distance = max_distance_note.original_distance
+        }
+    end
+    
+    return placement_info
+end
+
 -- Place a symbol at the current cursor position using global symbol registry
+-- Phase 5: Now supports multi-track symbol placement with Independent mode
 function editor.place_symbol(symbol_name)
     print("DEBUG: editor.place_symbol() called with symbol: " .. tostring(symbol_name))
     
@@ -367,9 +540,39 @@ function editor.place_symbol(symbol_name)
         return false
     end
     
+    -- Phase 5: Check if this is a multi-track symbol and get distance mode
+    local is_multi_track = selected_set.is_multi_track or false
+    local track_count = selected_set.track_count or 1
+    local is_independent_mode = false
+    
+    if is_multi_track and get_multi_track_distance_mode and get_multi_track_distance_mode_constants then
+        local mode = get_multi_track_distance_mode()
+        local constants = get_multi_track_distance_mode_constants()
+        is_independent_mode = (mode == constants.INDEPENDENT)
+        print("DEBUG: Multi-track symbol detected - " .. track_count .. " tracks, Independent mode: " .. tostring(is_independent_mode))
+    elseif is_multi_track then
+        print("DEBUG: Multi-track symbol detected - " .. track_count .. " tracks")
+    end
+    
     -- Get current cursor position
     local current_track = song.selected_track_index
     local current_line = song.selected_line_index
+    
+    -- Phase 5: Validate that we have enough tracks for multi-track placement
+    if is_multi_track then
+        local sequencer_track_count = song.sequencer_track_count
+        local max_needed_track = current_track + track_count - 1
+        
+        if max_needed_track > sequencer_track_count then
+            local warning_msg = string.format(
+                "Multi-track symbol requires %d tracks, but only %d available from cursor position.",
+                track_count, 
+                sequencer_track_count - current_track + 1
+            )
+            print("DEBUG: " .. warning_msg)
+            renoise.app():show_status("BreakFast: " .. warning_msg)
+        end
+    end
     
     -- Initialize placement state if this is the first symbol or cursor moved
     if not placement_state.is_chaining or 
@@ -382,19 +585,32 @@ function editor.place_symbol(symbol_name)
         placement_state.is_chaining = true
         placement_state.last_symbol_timing = nil
         placement_state.cumulative_timing = {}
+        -- Phase 5: Reset per-track state when starting fresh
+        placement_state.per_track_next_lines = {}
+        placement_state.per_track_last_timings = {}
+        placement_state.is_independent_mode = is_independent_mode
     end
     
+    local placement_info
     
-    -- Use the break set from global registry (already validated above)
-    -- selected_set is already set from symbol_data.break_set
-    
-    -- Calculate placement positions using stitching logic
-    local placement_info = calculate_stitched_placement_positions(
-        selected_set, 
-        placement_state.next_placement_line, 
-        placement_state.last_symbol_timing,
-        symbol_type  -- Pass symbol type to calculation function
-    )
+    -- Phase 5: For Independent mode, calculate placement per-track
+    if is_independent_mode and is_multi_track then
+        placement_info = calculate_independent_placement_positions(
+            selected_set,
+            current_line,
+            placement_state.per_track_next_lines,
+            placement_state.per_track_last_timings,
+            symbol_type
+        )
+    else
+        -- Standard placement for single-track or sync modes
+        placement_info = calculate_stitched_placement_positions(
+            selected_set, 
+            placement_state.next_placement_line, 
+            placement_state.last_symbol_timing,
+            symbol_type
+        )
+    end
 
 -- ALWAYS use the placement position as the start line - this follows the chain correctly
     placement_info.original_start_line = placement_state.next_placement_line
@@ -472,89 +688,51 @@ function editor.place_symbol(symbol_name)
                 
                 print("DEBUG: Moved to next pattern, adjusted notes with cursor offset consideration")
             end
-        elseif current_behavior == behavior_constants.INSERT then
-            -- INSERT: Always insert a new pattern after current, regardless of existing patterns
-            -- Check if ANY note in this symbol would exceed current pattern length
-            local max_note_line = 0
-            for _, note in ipairs(placement_info.notes) do
-                max_note_line = math.max(max_note_line, note.line)
-            end
-            
-            if max_note_line > song.selected_pattern.number_of_lines then
-                local current_sequence_pos = song.selected_sequence_index
-                local next_sequence_pos = current_sequence_pos + 1
-                local current_pattern_length = song.selected_pattern.number_of_lines
-                
-                -- Always insert a new pattern (key difference from NEXT_PATTERN)
-                local new_pattern_index = song.sequencer:insert_new_pattern_at(next_sequence_pos)
-                print("DEBUG: INSERT behavior - Created new pattern " .. new_pattern_index .. " at sequence position " .. next_sequence_pos)
-                
-                -- Set new pattern length to match current pattern
-                local new_pattern = song.patterns[new_pattern_index]
-                if new_pattern then
-                    new_pattern.number_of_lines = current_pattern_length
-                    print("DEBUG: INSERT behavior - Set new pattern length to " .. current_pattern_length)
-                end
-                
-                -- Store original positions before pattern transition for Intersect behavior
-                placement_info.original_next_line_before_transition = placement_info.next_line
-                placement_info.original_start_line_before_transition = placement_info.original_start_line
-                
-                -- Move to newly inserted pattern
-                song.selected_sequence_index = next_sequence_pos
-                
-                -- Adjust all note positions to wrap to new pattern
-                for _, note in ipairs(placement_info.notes) do
-                    -- Calculate how far this note extends beyond the current pattern
-                    local overhang = note.line - current_pattern_length
-                    -- Place it at the beginning of next pattern plus the overhang
-                    note.line = overhang
-                end
-                
-                -- Adjust next_line calculation for proper chaining
-                local next_line_overhang = placement_info.next_line - current_pattern_length
-                placement_info.next_line = next_line_overhang
-                
-                -- Adjust original_start_line for new pattern context
-                if placement_info.original_start_line then
-                    local start_line_overhang = placement_info.original_start_line - current_pattern_length
-                    placement_info.original_start_line = start_line_overhang
-                    print("DEBUG: INSERT behavior - Adjusted original_start_line from " .. placement_info.original_start_line_before_transition .. " to " .. placement_info.original_start_line .. " for new pattern")
-                end
-                
-                -- Adjust last_timing to maintain stitching chain
-                if placement_info.last_timing then
-                    local timing_overhang = placement_info.last_timing.relative_line - current_pattern_length
-                    placement_info.last_timing.relative_line = timing_overhang
-                end
-                
-                -- Adjust last_note_distance for pattern extension calculations
-                if placement_info.last_note_distance then
-                    local distance_overhang = placement_info.last_note_distance.line - current_pattern_length
-                    placement_info.last_note_distance.line = distance_overhang
-                end
-                
-                -- Mark that pattern transition occurred for Intersect behavior
-                placement_info.pattern_transition_occurred = true
-                
-                -- Update placement state to reflect new pattern position
-                placement_state.next_placement_line = placement_info.next_line
-                
-                print("DEBUG: INSERT behavior - Moved to inserted pattern, adjusted notes")
-            end
         end
     end
     
     -- Place the notes
-    local success = editor.place_notes_in_pattern(placement_info, current_track)
+    -- Phase 5: Pass multi-track info to placement function
+    local success = editor.place_notes_in_pattern(placement_info, current_track, is_multi_track, track_count)
     
     if success then
-        -- Update next placement line and timing state for chaining
-        placement_state.next_placement_line = placement_info.next_line
-        placement_state.last_symbol_timing = placement_info.last_timing
+        -- Phase 5: Update state based on mode
+        if is_independent_mode and is_multi_track then
+            -- Store per-track state for Independent mode
+            if placement_info.per_track_next_lines then
+                for track_offset, next_line in pairs(placement_info.per_track_next_lines) do
+                    placement_state.per_track_next_lines[track_offset] = next_line
+                end
+            end
+            if placement_info.per_track_last_timings then
+                for track_offset, timing in pairs(placement_info.per_track_last_timings) do
+                    placement_state.per_track_last_timings[track_offset] = timing
+                end
+            end
+            -- Use earliest next line for cursor position reference
+            local earliest_next = nil
+            for _, next_line in pairs(placement_state.per_track_next_lines) do
+                if not earliest_next or next_line < earliest_next then
+                    earliest_next = next_line
+                end
+            end
+            if earliest_next then
+                placement_state.next_placement_line = earliest_next
+            end
+        else
+            -- Standard single-track or sync mode
+            placement_state.next_placement_line = placement_info.next_line
+            placement_state.last_symbol_timing = placement_info.last_timing
+        end
         
-        renoise.app():show_status(string.format("Placed symbol %s (%d notes)", 
-            symbol_name, #placement_info.notes))
+        -- Phase 5: Enhanced status message for multi-track
+        if is_multi_track then
+            renoise.app():show_status(string.format("Placed symbol %s (%d notes across %d tracks)", 
+                symbol_name, #placement_info.notes, track_count))
+        else
+            renoise.app():show_status(string.format("Placed symbol %s (%d notes)", 
+                symbol_name, #placement_info.notes))
+        end
         return true
     end
     
@@ -2010,7 +2188,8 @@ end
 
 
 -- UPDATED: Place notes in the pattern (now with multi-column support and overflow handling)
-function editor.place_notes_in_pattern(placement_info, track_index)
+-- Phase 5: Added is_multi_track and track_count parameters for multi-track placement
+function editor.place_notes_in_pattern(placement_info, track_index, is_multi_track, track_count)
     if not renoise.song() then
         renoise.app():show_warning("Song not available")
         return false
@@ -2019,7 +2198,11 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     local song = renoise.song()
     local pattern = song.selected_pattern
     
-    -- Validate track
+    -- Phase 5: Default multi-track parameters
+    is_multi_track = is_multi_track or placement_info.is_multi_track or false
+    track_count = track_count or placement_info.track_count or 1
+    
+    -- Validate base track
     if track_index < 1 or track_index > #song.tracks then
         renoise.app():show_warning("Invalid track selected")
         return false
@@ -2028,6 +2211,23 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     if song.tracks[track_index].type ~= renoise.Track.TRACK_TYPE_SEQUENCER then
         renoise.app():show_warning("Selected track is not a sequencer track")
         return false
+    end
+    
+    -- Phase 5: Helper function to get valid target track for a note
+    local function get_target_track_index(note)
+        local note_track_offset = note.track_offset or 0
+        local target_track = track_index + note_track_offset
+        
+        -- Validate target track exists and is a sequencer track
+        if target_track < 1 or target_track > #song.tracks then
+            return track_index
+        end
+        
+        if song.tracks[target_track].type ~= renoise.Track.TRACK_TYPE_SEQUENCER then
+            return track_index
+        end
+        
+        return target_track
     end
     
     local track = pattern:track(track_index)
@@ -2094,9 +2294,13 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     end
     
     -- UPDATED: Place each note with multi-column support
+    -- Phase 5: Use target track from note data for multi-track placement
     for _, note in ipairs(placement_info.notes) do
         if note.line >= 1 and note.line <= pattern.number_of_lines then
-            local line = track:line(note.line)
+            -- Phase 5: Get the correct track for this note
+            local note_target_track_index = get_target_track_index(note)
+            local note_track = pattern:track(note_target_track_index)
+            local line = note_track:line(note.line)
             
             
             -- Determine placement strategy based on overwrite behavior
