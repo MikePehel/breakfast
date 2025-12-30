@@ -17,6 +17,20 @@ labeler.refresh_callback = nil
 local dialog = nil
 labeler.dialog = nil  -- Expose dialog state for external checking
 
+-- Phase 6: Slice preview state management
+local slice_preview_state = {
+    is_playing = false,
+    current_note = nil,
+    current_instrument = nil,
+    current_button_id = nil,
+    dialog_vb = nil,
+    auto_stop_time = nil  -- For auto-stop after duration
+}
+
+-- Phase 6: Preview timer state
+local preview_timer_active = false
+local PREVIEW_DURATION_MS = 2000  -- Auto-stop after 2 seconds
+
 -- Global symbol registry access (will be set by main.lua)
 local get_global_symbol_registry = nil
 local assign_symbols_to_instrument = nil
@@ -132,6 +146,165 @@ function labeler.remove_custom_label(label_name)
         end
     end
     return false
+end
+
+-- ============================================================================
+-- Phase 6: Slice Preview Functions
+-- ============================================================================
+
+-- Timer callback for auto-stop preview
+local function slice_preview_timer_callback()
+    if not slice_preview_state.is_playing then
+        -- Stop timer if preview is not active
+        if preview_timer_active and renoise.tool():has_timer(slice_preview_timer_callback) then
+            renoise.tool():remove_timer(slice_preview_timer_callback)
+            preview_timer_active = false
+        end
+        return
+    end
+    
+    -- Check if we should auto-stop
+    if slice_preview_state.auto_stop_time then
+        local current_time = os.clock() * 1000  -- Convert to ms
+        if current_time >= slice_preview_state.auto_stop_time then
+            labeler.stop_slice_preview()
+        end
+    end
+end
+
+-- Update preview button visual (▸ when stopped, ■ when playing)
+local function update_preview_button(button_id, dialog_vb, is_playing)
+    if not dialog_vb then return end
+    
+    local button = dialog_vb.views[button_id]
+    if button then
+        button.text = is_playing and "■" or "▸"
+    end
+end
+
+-- Stop any currently playing slice preview
+function labeler.stop_slice_preview()
+    -- Remove timer if active
+    if preview_timer_active then
+        if renoise.tool():has_timer(slice_preview_timer_callback) then
+            renoise.tool():remove_timer(slice_preview_timer_callback)
+        end
+        preview_timer_active = false
+    end
+    
+    if not slice_preview_state.is_playing then
+        return
+    end
+    
+    local song = renoise.song()
+    if song and slice_preview_state.current_note and slice_preview_state.current_instrument then
+        -- Send note-off
+        local track_idx = song.selected_track_index
+        pcall(function()
+            song:trigger_instrument_note_off(
+                slice_preview_state.current_instrument,
+                track_idx,
+                slice_preview_state.current_note
+            )
+        end)
+    end
+    
+    -- Update button visual back to play symbol
+    if slice_preview_state.dialog_vb and slice_preview_state.current_button_id then
+        update_preview_button(slice_preview_state.current_button_id, slice_preview_state.dialog_vb, false)
+    end
+    
+    -- Reset state
+    slice_preview_state.is_playing = false
+    slice_preview_state.current_note = nil
+    slice_preview_state.current_instrument = nil
+    slice_preview_state.current_button_id = nil
+    slice_preview_state.dialog_vb = nil
+    slice_preview_state.auto_stop_time = nil
+    
+    print("DEBUG: Stopped slice preview")
+end
+
+-- Start preview for a specific slice/note
+function labeler.start_slice_preview(instrument_index, note_value, button_id, dialog_vb)
+    -- Stop any existing preview first
+    labeler.stop_slice_preview()
+    
+    local song = renoise.song()
+    if not song then
+        print("DEBUG: No song loaded for slice preview")
+        return false
+    end
+    
+    -- Validate instrument
+    if not instrument_index or instrument_index < 1 or instrument_index > #song.instruments then
+        print("DEBUG: Invalid instrument index for slice preview:", instrument_index)
+        return false
+    end
+    
+    local instrument = song.instruments[instrument_index]
+    if not instrument or #instrument.samples == 0 then
+        print("DEBUG: Instrument has no samples for preview")
+        return false
+    end
+    
+    local track_idx = song.selected_track_index
+    
+    -- Trigger note on
+    local success = pcall(function()
+        song:trigger_instrument_note_on(instrument_index, track_idx, note_value, 0.5)
+    end)
+    
+    if not success then
+        print("DEBUG: Failed to trigger note for slice preview")
+        return false
+    end
+    
+    -- Update state
+    slice_preview_state.is_playing = true
+    slice_preview_state.current_note = note_value
+    slice_preview_state.current_instrument = instrument_index
+    slice_preview_state.current_button_id = button_id
+    slice_preview_state.dialog_vb = dialog_vb
+    slice_preview_state.auto_stop_time = (os.clock() * 1000) + PREVIEW_DURATION_MS
+    
+    -- Update button visual to stop symbol
+    update_preview_button(button_id, dialog_vb, true)
+    
+    -- Start auto-stop timer (check every 100ms)
+    if not preview_timer_active then
+        renoise.tool():add_timer(slice_preview_timer_callback, 100)
+        preview_timer_active = true
+    end
+    
+    print("DEBUG: Started slice preview - inst:", instrument_index, "note:", note_value)
+    return true
+end
+
+-- Toggle preview for a slice (play if stopped, stop if playing same slice)
+function labeler.toggle_slice_preview(instrument_index, note_value, button_id, dialog_vb)
+    -- If same slice is playing, stop it
+    if slice_preview_state.is_playing and
+       slice_preview_state.current_instrument == instrument_index and
+       slice_preview_state.current_note == note_value then
+        labeler.stop_slice_preview()
+        return false
+    end
+    
+    -- Start preview (this will stop any different slice that's playing)
+    return labeler.start_slice_preview(instrument_index, note_value, button_id, dialog_vb)
+end
+
+-- Check if slice preview is currently active
+function labeler.is_slice_previewing()
+    return slice_preview_state.is_playing
+end
+
+-- Check if a specific slice is being previewed
+function labeler.is_previewing_slice(instrument_index, note_value)
+    return slice_preview_state.is_playing and
+           slice_preview_state.current_instrument == instrument_index and
+           slice_preview_state.current_note == note_value
 end
 
 
@@ -756,6 +929,8 @@ function labeler.show_dialog()
     
     -- Function to rebuild the dialog (called when Label 2 toggle changes)
     local function rebuild_dialog()
+        -- Stop any active preview before rebuilding
+        labeler.stop_slice_preview()
         if dialog and dialog.visible then
             dialog:close()
             dialog = nil
@@ -763,11 +938,15 @@ function labeler.show_dialog()
         labeler.show_dialog()
     end
     
+    -- Preview column width
+    local preview_column_width = 22
+    
     -- Build header row based on show_label2 state
     local header_row
     if show_label2 then
         header_row = dialog_vb:row {
             spacing = spacing,
+            dialog_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
             dialog_vb:text { text = "Note", width = narrow_column, align = "center", font = "bold" },
             dialog_vb:text { text = "Sample", width = column_width, align = "center", font = "bold" },
             dialog_vb:text { text = "Label", width = column_width, align = "center", font = "bold" },
@@ -786,6 +965,7 @@ function labeler.show_dialog()
     else
         header_row = dialog_vb:row {
             spacing = spacing,
+            dialog_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
             dialog_vb:text { text = "Note", width = narrow_column, align = "center", font = "bold" },
             dialog_vb:text { text = "Sample", width = column_width, align = "center", font = "bold" },
             dialog_vb:text { text = "Label", width = column_width, align = "center", font = "bold" },
@@ -834,6 +1014,8 @@ function labeler.show_dialog()
                     return tonumber(str, 16)
                 end,
                 notifier = function(value)
+                    -- Stop any active preview before changing instrument
+                    labeler.stop_slice_preview()
                     -- Close dialog and reopen with new instrument
                     dialog:close()
                     song.selected_instrument_index = value + 1
@@ -854,7 +1036,26 @@ function labeler.show_dialog()
     
     -- Add mapping rows
     for i, mapping in ipairs(mapping_data) do
+        -- Create preview button ID
+        local preview_button_id = "preview_" .. i
+        
         local row_elements = {
+            -- Preview button (Phase 6)
+            dialog_vb:button {
+                id = preview_button_id,
+                text = "▸",
+                width = preview_column_width,
+                tooltip = "Preview this slice",
+                notifier = function()
+                    labeler.toggle_slice_preview(
+                        current_instrument_index,
+                        mapping.note_value,
+                        preview_button_id,
+                        dialog_vb
+                    )
+                end
+            },
+            
             -- Note
             dialog_vb:text { 
                 text = mapping.display_note, 
@@ -945,6 +1146,9 @@ function labeler.show_dialog()
                 width = 100,
                 notifier = function()
                     print("DEBUG: Save Labels button clicked")
+                    
+                    -- Stop any active preview
+                    labeler.stop_slice_preview()
                     
                     -- Collect labels
                     local new_labels = {}
@@ -1040,6 +1244,8 @@ function labeler.show_dialog()
                 text = "Cancel",
                 width = 80,
                 notifier = function()
+                    -- Stop any active preview
+                    labeler.stop_slice_preview()
                     if dialog and dialog.visible then
                         dialog:close()
                         dialog = nil
@@ -1055,6 +1261,8 @@ end
 
 -- Cleanup function
 function labeler.cleanup()
+    -- Stop any active preview
+    labeler.stop_slice_preview()
     if dialog and dialog.visible then
         dialog:close()
         dialog = nil

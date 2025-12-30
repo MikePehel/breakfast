@@ -979,13 +979,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- Ã¢â€¢â€
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- Ã¢â€¢â€”
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- Ã¢â€¢Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- Ã¢â€â€š
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- Ã¢â€Å“
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- Ã¢â€Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- Ã¢â€â‚¬
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÂ¢Ã¢â‚¬Â¢Ã¢â‚¬Â
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÂ¢Ã¢â‚¬Â¢Ã¢â‚¬â€
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÂ¢Ã¢â‚¬Â¢Ã‚Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œ
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ‚Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -2104,6 +2104,7 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
     local column_width = 100
     local narrow_column = 50
     local spacing = 5
+    local preview_column_width = 22  -- Phase 6: Preview column
     
     -- Build the dialog content
     local dialog_content = capture_vb:column {
@@ -2123,9 +2124,10 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
         
         capture_vb:space { height = 5 },
         
-        -- Header row
+        -- Header row (Phase 6: Added preview column)
         capture_vb:row {
             spacing = spacing,
+            capture_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
             capture_vb:text { text = "Inst", width = narrow_column, font = "bold", align = "center" },
             capture_vb:text { text = "Note", width = narrow_column, font = "bold", align = "center" },
             capture_vb:text { text = "Label", width = column_width, font = "bold", align = "center" },
@@ -2139,8 +2141,27 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
         local status_text = note_info.has_existing_label and "(auto-filled)" or "(no label)"
         local status_style = note_info.has_existing_label and "normal" or "disabled"
         
+        -- Phase 6: Create preview button ID
+        local preview_button_id = "capture_preview_" .. i
+        
         local row = capture_vb:row {
             spacing = spacing,
+            
+            -- Phase 6: Preview button
+            capture_vb:button {
+                id = preview_button_id,
+                text = "▸",
+                width = preview_column_width,
+                tooltip = "Preview this note",
+                notifier = function()
+                    labeler.toggle_slice_preview(
+                        note_info.instrument_index,
+                        note_info.note_value,
+                        preview_button_id,
+                        capture_vb
+                    )
+                end
+            },
             
             -- Instrument
             capture_vb:text {
@@ -2193,6 +2214,9 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                 text = "Capture & Save Labels",
                 width = 140,
                 notifier = function()
+                    -- Phase 6: Stop any active preview
+                    labeler.stop_slice_preview()
+                    
                     -- Collect labels from dialog
                     local labels_to_save = {}
                     for i, note_info in ipairs(unique_notes_list) do
@@ -2249,6 +2273,9 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                 text = "Capture Only",
                 width = 100,
                 notifier = function()
+                    -- Phase 6: Stop any active preview
+                    labeler.stop_slice_preview()
+                    
                     -- Close dialog and capture without saving labels
                     if capture_dialog and capture_dialog.visible then
                         capture_dialog:close()
@@ -2261,6 +2288,9 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                 text = "Cancel",
                 width = 80,
                 notifier = function()
+                    -- Phase 6: Stop any active preview
+                    labeler.stop_slice_preview()
+                    
                     if capture_dialog and capture_dialog.visible then
                         capture_dialog:close()
                     end
@@ -6713,8 +6743,9 @@ register_keybinding_entries()
 
 -- Cleanup on tool unload
 function cleanup()
-    -- Stop any active preview
+    -- Stop any active preview (both symbol and slice)
     stop_symbol_preview()
+    labeler.stop_slice_preview()  -- Phase 6: Stop slice preview
     
     -- Save global symbol registry before cleanup
     save_global_symbol_registry()
