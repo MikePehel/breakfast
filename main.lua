@@ -82,6 +82,20 @@ local organize_view_enabled = false  -- Toggle state for organize view button (d
 local detailed_view_enabled = false  -- Toggle state for detailed view button (default off)
 local expanded_symbol = nil          -- Track which symbol is currently expanded
 
+-- Phase 4: Dictionary view state
+local dictionary_view_enabled = false  -- Toggle state for dictionary view button (default off)
+
+-- Phase 4: Symbol Dictionaries data structure
+-- symbol_dictionaries[dict_name] = {
+--     name = string,
+--     color = string (from color_definitions),
+--     symbols = array (ordered),
+--     created_at = timestamp,
+--     description = string
+-- }
+local symbol_dictionaries = {}
+local symbol_to_dictionary_cache = {}  -- Reverse lookup cache: symbol -> dict_name
+
 -- Global symbol registry for cross-instrument symbol management
 local global_symbol_registry = {}
 local available_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -109,7 +123,8 @@ local preferences = renoise.Document.create("BreakFastPreferences") {
     -- Use a simple string-based storage approach to avoid nested table issues
     global_symbol_registry_data = "",
     custom_labels_data = "",      -- User-defined custom labels (JSON array)
-    show_label2 = false           -- Toggle state for Label 2 column visibility
+    show_label2 = false,          -- Toggle state for Label 2 column visibility
+    symbol_dictionaries_data = "" -- Phase 4: Dictionary persistence
 }
 
 renoise.tool().preferences = preferences
@@ -180,6 +195,459 @@ local function serialize_table(t, indent)
     
     result = result .. spacing .. "}"
     return result
+end
+
+-- ============================================================================
+-- Phase 4: Dictionary CRUD Functions
+-- ============================================================================
+
+-- Rebuild the symbol_to_dictionary_cache from dictionaries
+local function rebuild_dictionary_cache()
+    symbol_to_dictionary_cache = {}
+    for dict_name, dict_data in pairs(symbol_dictionaries) do
+        if dict_data.symbols then
+            for _, symbol in ipairs(dict_data.symbols) do
+                symbol_to_dictionary_cache[symbol] = dict_name
+            end
+        end
+    end
+    print("DEBUG: Rebuilt dictionary cache with " .. table.count(symbol_to_dictionary_cache) .. " symbol mappings")
+end
+
+-- Load dictionaries from preferences
+local function load_dictionaries()
+    if preferences.symbol_dictionaries_data and preferences.symbol_dictionaries_data.value ~= "" then
+        local success, loaded_dictionaries = pcall(loadstring("return " .. preferences.symbol_dictionaries_data.value))
+        if success and loaded_dictionaries then
+            symbol_dictionaries = loaded_dictionaries
+            rebuild_dictionary_cache()
+            print("DEBUG: Loaded " .. table.count(symbol_dictionaries) .. " dictionaries")
+        else
+            print("DEBUG: Failed to load dictionaries, starting with empty")
+            symbol_dictionaries = {}
+        end
+    else
+        print("DEBUG: No saved dictionaries found")
+        symbol_dictionaries = {}
+    end
+end
+
+-- Save dictionaries to preferences
+local function save_dictionaries()
+    local serialized = serialize_table(symbol_dictionaries)
+    preferences.symbol_dictionaries_data.value = serialized
+    rebuild_dictionary_cache()
+    print("DEBUG: Saved " .. table.count(symbol_dictionaries) .. " dictionaries")
+end
+
+-- Create a new dictionary
+local function create_dictionary(name, color, description)
+    if not name or name == "" then
+        return false, "Dictionary name cannot be empty"
+    end
+    if symbol_dictionaries[name] then
+        return false, "Dictionary '" .. name .. "' already exists"
+    end
+    
+    symbol_dictionaries[name] = {
+        name = name,
+        color = color or "",
+        symbols = {},
+        created_at = os.time(),
+        description = description or ""
+    }
+    
+    save_dictionaries()
+    print("DEBUG: Created dictionary '" .. name .. "'")
+    return true
+end
+
+-- Rename a dictionary
+local function rename_dictionary(old_name, new_name)
+    if not symbol_dictionaries[old_name] then
+        return false, "Dictionary '" .. old_name .. "' not found"
+    end
+    if old_name == new_name then
+        return true -- No change needed
+    end
+    if symbol_dictionaries[new_name] then
+        return false, "Dictionary '" .. new_name .. "' already exists"
+    end
+    
+    -- Copy data to new name
+    symbol_dictionaries[new_name] = symbol_dictionaries[old_name]
+    symbol_dictionaries[new_name].name = new_name
+    
+    -- Remove old entry
+    symbol_dictionaries[old_name] = nil
+    
+    save_dictionaries()
+    print("DEBUG: Renamed dictionary '" .. old_name .. "' to '" .. new_name .. "'")
+    return true
+end
+
+-- Set dictionary color
+local function set_dictionary_color(dict_name, color)
+    if not symbol_dictionaries[dict_name] then
+        return false, "Dictionary '" .. dict_name .. "' not found"
+    end
+    
+    symbol_dictionaries[dict_name].color = color or ""
+    save_dictionaries()
+    print("DEBUG: Set color '" .. (color or "") .. "' for dictionary '" .. dict_name .. "'")
+    return true
+end
+
+-- Set dictionary description
+local function set_dictionary_description(dict_name, description)
+    if not symbol_dictionaries[dict_name] then
+        return false, "Dictionary '" .. dict_name .. "' not found"
+    end
+    
+    symbol_dictionaries[dict_name].description = description or ""
+    save_dictionaries()
+    return true
+end
+
+-- Delete a dictionary (symbols become ungrouped)
+local function delete_dictionary(dict_name)
+    if not symbol_dictionaries[dict_name] then
+        return false, "Dictionary '" .. dict_name .. "' not found"
+    end
+    
+    symbol_dictionaries[dict_name] = nil
+    save_dictionaries()
+    print("DEBUG: Deleted dictionary '" .. dict_name .. "'")
+    return true
+end
+
+-- Add a symbol to a dictionary (removes from any existing dictionary first)
+local function add_symbol_to_dictionary(symbol, dict_name)
+    if not symbol_dictionaries[dict_name] then
+        return false, "Dictionary '" .. dict_name .. "' not found"
+    end
+    
+    -- Remove from any existing dictionary first
+    for name, dict_data in pairs(symbol_dictionaries) do
+        if dict_data.symbols then
+            for i, s in ipairs(dict_data.symbols) do
+                if s == symbol then
+                    table.remove(dict_data.symbols, i)
+                    break
+                end
+            end
+        end
+    end
+    
+    -- Add to new dictionary
+    table.insert(symbol_dictionaries[dict_name].symbols, symbol)
+    
+    save_dictionaries()
+    print("DEBUG: Added symbol '" .. symbol .. "' to dictionary '" .. dict_name .. "'")
+    return true
+end
+
+-- Remove a symbol from its current dictionary
+local function remove_symbol_from_current_dictionary(symbol)
+    local current_dict = symbol_to_dictionary_cache[symbol]
+    if not current_dict then
+        return true -- Already not in any dictionary
+    end
+    
+    local dict_data = symbol_dictionaries[current_dict]
+    if dict_data and dict_data.symbols then
+        for i, s in ipairs(dict_data.symbols) do
+            if s == symbol then
+                table.remove(dict_data.symbols, i)
+                save_dictionaries()
+                print("DEBUG: Removed symbol '" .. symbol .. "' from dictionary '" .. current_dict .. "'")
+                return true
+            end
+        end
+    end
+    
+    return true
+end
+
+-- Get the dictionary name for a symbol (nil if ungrouped)
+local function get_dictionary_for_symbol(symbol)
+    return symbol_to_dictionary_cache[symbol]
+end
+
+-- Get dictionary data by name
+local function get_dictionary_data(dict_name)
+    return symbol_dictionaries[dict_name]
+end
+
+-- Get all dictionary names (sorted alphabetically)
+local function get_all_dictionaries()
+    local names = {}
+    for name, _ in pairs(symbol_dictionaries) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    return names
+end
+
+-- Get symbols ordered by dictionary (for dictionary view)
+-- Returns: array of {symbol = string, dictionary = string or nil}
+local function get_symbols_ordered_by_dictionary()
+    local result = {}
+    local used_symbols = {}
+    
+    -- First, add symbols from each dictionary in order
+    local dict_names = get_all_dictionaries()
+    for _, dict_name in ipairs(dict_names) do
+        local dict_data = symbol_dictionaries[dict_name]
+        if dict_data and dict_data.symbols then
+            for _, symbol in ipairs(dict_data.symbols) do
+                table.insert(result, {symbol = symbol, dictionary = dict_name})
+                used_symbols[symbol] = true
+            end
+        end
+    end
+    
+    -- Then add ungrouped symbols
+    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+    for _, symbol in ipairs(all_symbols) do
+        if not used_symbols[symbol] then
+            table.insert(result, {symbol = symbol, dictionary = nil})
+        end
+    end
+    
+    return result
+end
+
+-- Toggle dictionary view mode
+local function toggle_dictionary_view()
+    dictionary_view_enabled = not dictionary_view_enabled
+    print("DEBUG: Dictionary view " .. (dictionary_view_enabled and "enabled" or "disabled"))
+    return dictionary_view_enabled
+end
+
+-- Get dictionary view state
+local function is_dictionary_view_enabled()
+    return dictionary_view_enabled
+end
+
+-- ============================================================================
+-- Phase 4: Dictionary Management Dialog
+-- ============================================================================
+
+local dictionary_dialog = nil  -- Reference to dictionary management dialog
+
+local function show_dictionary_management_dialog()
+    local vb = renoise.ViewBuilder()
+    
+    -- Close existing dialog if open
+    if dictionary_dialog and dictionary_dialog.visible then
+        dictionary_dialog:close()
+    end
+    
+    -- Build the dictionary list dynamically
+    local function build_dictionary_list()
+        local dict_names = get_all_dictionaries()
+        local list_column = vb:column {
+            id = "dictionary_list_container",
+            spacing = 5,
+            width = 400
+        }
+        
+        if #dict_names == 0 then
+            list_column:add_child(vb:text {
+                text = "No dictionaries created yet.",
+                style = "disabled"
+            })
+        else
+            for _, dict_name in ipairs(dict_names) do
+                local dict_data = get_dictionary_data(dict_name)
+                local symbol_count = dict_data.symbols and #dict_data.symbols or 0
+                local color_name = dict_data.color or ""
+                
+                -- Create row for this dictionary
+                local dict_row = vb:row {
+                    spacing = 5,
+                    
+                    -- Color indicator (using text with color name)
+                    vb:text {
+                        text = color_name ~= "" and "[" .. color_name:sub(1,1) .. "]" or "[ ]",
+                        width = 30,
+                        style = color_name ~= "" and "strong" or "disabled"
+                    },
+                    
+                    -- Dictionary name
+                    vb:text {
+                        text = dict_name,
+                        width = 120,
+                        style = "strong"
+                    },
+                    
+                    -- Symbol count
+                    vb:text {
+                        text = "(" .. symbol_count .. " symbols)",
+                        width = 80,
+                        style = "disabled"
+                    },
+                    
+                    -- Color dropdown
+                    vb:popup {
+                        width = 70,
+                        items = color_dropdown_items,
+                        value = (function()
+                            for i, c in ipairs(color_dropdown_items) do
+                                if c == color_name then return i end
+                            end
+                            return 1
+                        end)(),
+                        notifier = function(new_index)
+                            set_dictionary_color(dict_name, color_dropdown_items[new_index])
+                            renoise.app():show_status("Color updated for '" .. dict_name .. "'")
+                        end
+                    },
+                    
+                    -- Rename button
+                    vb:button {
+                        text = "Rename",
+                        width = 55,
+                        notifier = function()
+                            local new_name = renoise.app():prompt_for_string("Rename Dictionary", dict_name, "Enter new name:")
+                            if new_name and new_name ~= "" and new_name ~= dict_name then
+                                local success, err = rename_dictionary(dict_name, new_name)
+                                if success then
+                                    renoise.app():show_status("Renamed to '" .. new_name .. "'")
+                                    -- Refresh dialog
+                                    if dictionary_dialog then dictionary_dialog:close() end
+                                    show_dictionary_management_dialog()
+                                else
+                                    renoise.app():show_error(err or "Failed to rename dictionary")
+                                end
+                            end
+                        end
+                    },
+                    
+                    -- Delete button
+                    vb:button {
+                        text = "X",
+                        width = 25,
+                        notifier = function()
+                            local confirm = renoise.app():show_prompt(
+                                "Delete Dictionary",
+                                "Delete '" .. dict_name .. "'? Symbols will become ungrouped.",
+                                {"Delete", "Cancel"}
+                            )
+                            if confirm == "Delete" then
+                                delete_dictionary(dict_name)
+                                renoise.app():show_status("Deleted '" .. dict_name .. "'")
+                                -- Refresh dialog
+                                if dictionary_dialog then dictionary_dialog:close() end
+                                show_dictionary_management_dialog()
+                            end
+                        end
+                    }
+                }
+                
+                list_column:add_child(dict_row)
+            end
+        end
+        
+        return list_column
+    end
+    
+    -- Main dialog content
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
+        
+        -- Header
+        vb:text {
+            text = "Dictionary Management",
+            font = "big",
+            style = "strong"
+        },
+        
+        vb:text {
+            text = "Organize symbols into named groups with optional colors.",
+            style = "disabled"
+        },
+        
+        -- Separator
+        vb:space { height = 5 },
+        
+        -- Create new dictionary section
+        vb:row {
+            spacing = 5,
+            
+            vb:text {
+                text = "New:",
+                width = 35
+            },
+            
+            vb:textfield {
+                id = "new_dict_name",
+                width = 150,
+                text = ""
+            },
+            
+            vb:popup {
+                id = "new_dict_color",
+                width = 70,
+                items = color_dropdown_items,
+                value = 1
+            },
+            
+            vb:button {
+                text = "Create",
+                width = 60,
+                notifier = function()
+                    local name = vb.views.new_dict_name.text
+                    local color_index = vb.views.new_dict_color.value
+                    local color = color_dropdown_items[color_index]
+                    
+                    if name and name ~= "" then
+                        local success, err = create_dictionary(name, color, "")
+                        if success then
+                            renoise.app():show_status("Created dictionary '" .. name .. "'")
+                            -- Refresh dialog
+                            if dictionary_dialog then dictionary_dialog:close() end
+                            show_dictionary_management_dialog()
+                        else
+                            renoise.app():show_error(err or "Failed to create dictionary")
+                        end
+                    else
+                        renoise.app():show_error("Please enter a dictionary name")
+                    end
+                end
+            }
+        },
+        
+        -- Separator
+        vb:space { height = 5 },
+        vb:text {
+            text = "Existing Dictionaries:",
+            style = "strong"
+        },
+        
+        -- Dictionary list
+        build_dictionary_list(),
+        
+        -- Separator
+        vb:space { height = 10 },
+        
+        -- Close button
+        vb:row {
+            vb:button {
+                text = "Close",
+                width = 80,
+                notifier = function()
+                    if dictionary_dialog then
+                        dictionary_dialog:close()
+                    end
+                end
+            }
+        }
+    }
+    
+    dictionary_dialog = renoise.app():show_custom_dialog("Dictionaries", dialog_content)
 end
 
 -- Input lock visual update callback
@@ -468,32 +936,13 @@ function toggle_tag_view(vb)
     
     -- Update toggle button text
     if vb.views.category_toggle then
-        vb.views.category_toggle.text = category_view_enabled and "..." or "="
+        vb.views.category_toggle.text = category_view_enabled and "Tag*" or "Tag"
     end
     
-    -- If toggling OFF, refresh the dialog to show updated tag displays
-    if not category_view_enabled then
-        print("DEBUG: Tag view toggled off - refreshing dialog to update tag displays")
-        if dialog and dialog.visible then
-            dialog:close()
-            show_main_dialog()
-        end
-        return
-    end
-    
-    -- Update visibility of all tag rows and color rows (only when toggling ON)
-    for _, symbol in ipairs(available_symbols) do
-        -- Update visibility of tag container
-        local tag_container = vb.views["tag_container_" .. symbol]
-        if tag_container then
-            tag_container.visible = category_view_enabled
-        end
-        
-        -- Update visibility of color rows
-        local color_row = vb.views["color_row_" .. symbol]
-        if color_row then
-            color_row.visible = category_view_enabled
-        end
+    -- Always refresh dialog to rebuild with new width
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
     end
     
     print("DEBUG: Tag view toggled to " .. (category_view_enabled and "enabled" or "disabled"))
@@ -504,37 +953,13 @@ function toggle_organize_view(vb)
     
     -- Update toggle button text
     if vb.views.organize_toggle then
-        vb.views.organize_toggle.text = organize_view_enabled and "#" or "$"
+        vb.views.organize_toggle.text = organize_view_enabled and "Org*" or "Org"
     end
     
-    -- Update visibility of all organize elements
-    for _, symbol in ipairs(available_symbols) do
-        -- Update move row visibility
-        local move_row = vb.views["move_row_" .. symbol]
-        if move_row then
-            move_row.visible = organize_view_enabled
-        end
-        
-        -- Update delete row visibility
-        local delete_row = vb.views["delete_row_" .. symbol]
-        if delete_row then
-            delete_row.visible = organize_view_enabled
-        end
-        
-        -- Update organize row visibility (for empty symbols)
-        local organize_row = vb.views["organize_row_" .. symbol]
-        if organize_row then
-            organize_row.visible = organize_view_enabled
-        end
-        
-        -- Refresh dropdown options when organize view is enabled
-        if organize_view_enabled then
-            local dropdown = vb.views["move_dropdown_" .. symbol]
-            if dropdown then
-                dropdown.items = get_available_symbols_for_moving(symbol)
-                dropdown.value = 1  -- Reset to "Select target..."
-            end
-        end
+    -- Always refresh dialog to rebuild with new width
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
     end
     
     print("DEBUG: Organize view toggled to " .. (organize_view_enabled and "enabled" or "disabled"))
@@ -543,6 +968,15 @@ end
 -- Format detailed information about a symbol for display
 function format_detailed_symbol_info(symbol)
     local info_lines = {}
+    
+    -- Box drawing characters (using string.char for proper UTF-8)
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- â•”
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- â•—
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- â•
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- â”‚
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- â”œ
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- â”¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- â”€
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -560,12 +994,13 @@ function format_detailed_symbol_info(symbol)
     
     local note_count = #break_set.timing
     
-    -- ═══ HEADER ═══
-    table.insert(info_lines, "══ Symbol " .. symbol .. " ══")
+    -- === HEADER ===
+    local header = BOX_TL .. BOX_H .. BOX_H .. " Symbol " .. symbol .. " " .. string.rep(BOX_H, 27) .. BOX_TR
+    table.insert(info_lines, header)
     
-    -- ═══ TYPE & SOURCE ═══
+    -- === TYPE & SOURCE ===
     local symbol_type = symbol_data.symbol_type or "breakpoint"
-    table.insert(info_lines, "Type: " .. symbol_type)
+    table.insert(info_lines, BOX_V .. " Type: " .. symbol_type)
     
     -- Source info (for range_captured symbols)
     if symbol_data.source_metadata then
@@ -573,16 +1008,16 @@ function format_detailed_symbol_info(symbol)
         local pattern_idx = src.pattern_index or "??"
         local track_idx = src.track_index or "??"
         if type(pattern_idx) == "number" then
-            pattern_idx = string.format("%02X", pattern_idx - 1)
+            pattern_idx = string.format("%02d", pattern_idx)
         end
         if type(track_idx) == "number" then
-            track_idx = string.format("%02X", track_idx - 1)
+            track_idx = string.format("%02d", track_idx)
         end
-        table.insert(info_lines, "Source: P" .. pattern_idx .. " T" .. track_idx)
+        table.insert(info_lines, BOX_V .. " Source: Pattern " .. pattern_idx .. ", Track " .. track_idx)
         
         -- Capture timestamp
         if src.capture_info and src.capture_info.capture_timestamp then
-            table.insert(info_lines, "Captured: " .. src.capture_info.capture_timestamp)
+            table.insert(info_lines, BOX_V .. " Captured: " .. src.capture_info.capture_timestamp)
         end
     end
     
@@ -593,14 +1028,14 @@ function format_detailed_symbol_info(symbol)
         if song and song.instruments[instrument_index] then
             local inst_name = song.instruments[instrument_index].name
             if inst_name and inst_name ~= "" then
-                table.insert(info_lines, string.format("Inst: %02X %s", instrument_index - 1, inst_name:sub(1, 14)))
+                table.insert(info_lines, BOX_V .. string.format(" Inst: %02X %s", instrument_index - 1, inst_name:sub(1, 14)))
             else
-                table.insert(info_lines, string.format("Inst: %02X", instrument_index - 1))
+                table.insert(info_lines, BOX_V .. string.format(" Inst: %02X", instrument_index - 1))
             end
         end
     end
     
-    -- ═══ STATISTICS ═══
+    -- === STATISTICS ===
     -- Calculate timing span and stats
     local min_line, max_line = 1, 1
     local total_delay = 0
@@ -634,11 +1069,12 @@ function format_detailed_symbol_info(symbol)
     end
     
     local span = max_line - min_line + 1
-    table.insert(info_lines, string.format("Lines: %d | Notes: %d", span, note_count))
+    table.insert(info_lines, BOX_V .. string.format(" Total Lines: %d | Notes: %d", span, note_count))
     
-    -- ═══ NOTES SECTION ═══
-    table.insert(info_lines, "────────────")
-    table.insert(info_lines, "NOTES:")
+    -- === NOTES SECTION ===
+    local separator = BOX_LT .. string.rep(BOX_HL, 39) .. BOX_RT
+    table.insert(info_lines, separator)
+    table.insert(info_lines, BOX_V .. " NOTES:")
     
     -- Get labels for this instrument
     local saved_labels = symbol_data.saved_labels or {}
@@ -658,7 +1094,7 @@ function format_detailed_symbol_info(symbol)
     local max_notes_to_show = 6
     for i, timing in ipairs(break_set.timing) do
         if i > max_notes_to_show then
-            table.insert(info_lines, string.format("  ... +%d more", note_count - max_notes_to_show))
+            table.insert(info_lines, BOX_V .. string.format("   ... +%d more", note_count - max_notes_to_show))
             break
         end
         
@@ -667,6 +1103,7 @@ function format_detailed_symbol_info(symbol)
         local note_val = timing.note_value or (36 + (timing.instrument_value or 0))
         local inst_val = timing.source_instrument_index or timing.instrument_value or 0
         local vol = timing.volume_value
+        local pan = timing.panning_value
         local dist = timing.original_distance or 0
         
         -- Convert note value to note name
@@ -674,17 +1111,18 @@ function format_detailed_symbol_info(symbol)
         local note_index = (note_val % 12) + 1
         local note_name = note_names[note_index] .. octave
         
-        -- Format: L01 C-4 I11 V-- d00 Dist:2048
+        -- Format: L01 C-4 I11 V-- P-- d00 Dist:2048
         local vol_str = (vol and vol ~= 255 and vol ~= 0xFF) and string.format("%02X", vol) or "--"
+        local pan_str = (pan and pan ~= 255 and pan ~= 0xFF) and string.format("%02X", pan) or "--"
         local inst_str = string.format("%02X", inst_val)
         
-        table.insert(info_lines, string.format("L%02d %s I%s V%s d%02X", 
-            line, note_name, inst_str, vol_str, delay))
+        table.insert(info_lines, BOX_V .. string.format(" L%02d %s I%s V%s P%s d%02X Dist:%d", 
+            line, note_name, inst_str, vol_str, pan_str, delay, dist))
     end
     
-    -- ═══ STATISTICS SECTION ═══
-    table.insert(info_lines, "────────────")
-    table.insert(info_lines, "STATISTICS:")
+    -- === STATISTICS SECTION ===
+    table.insert(info_lines, separator)
+    table.insert(info_lines, BOX_V .. " STATISTICS:")
     
     -- Count unique instruments
     local inst_count = 0
@@ -695,7 +1133,7 @@ function format_detailed_symbol_info(symbol)
     end
     if inst_count > 0 then
         local inst_str = table.concat(inst_list, ","):sub(1, 12)
-        table.insert(info_lines, string.format("Instruments: %d (%s)", inst_count, inst_str))
+        table.insert(info_lines, BOX_V .. string.format(" Instruments: %d (%s)", inst_count, inst_str))
     end
     
     -- Count unique notes
@@ -709,20 +1147,20 @@ function format_detailed_symbol_info(symbol)
     end
     if note_type_count > 0 then
         local note_str = table.concat(note_list, ","):sub(1, 10)
-        table.insert(info_lines, string.format("Unique Notes: %d (%s)", note_type_count, note_str))
+        table.insert(info_lines, BOX_V .. string.format(" Unique Notes: %d (%s)", note_type_count, note_str))
     end
     
     -- Average distance
     if note_count > 0 then
         local avg_distance = math.floor(total_distance / note_count)
-        table.insert(info_lines, string.format("Avg Distance: %d ticks", avg_distance))
+        table.insert(info_lines, BOX_V .. string.format(" Avg Note Distance: %d ticks", avg_distance))
         
         -- Approximate duration in lines
         local duration_lines = math.floor(total_distance / 256)
-        table.insert(info_lines, string.format("Duration: ~%d lines", duration_lines))
+        table.insert(info_lines, BOX_V .. string.format(" Duration: ~%d lines", duration_lines))
     end
     
-    -- ═══ LABELS SECTION ═══
+    -- === LABELS SECTION ===
     local has_labels = false
     for _, _ in pairs(saved_labels) do
         has_labels = true
@@ -730,38 +1168,38 @@ function format_detailed_symbol_info(symbol)
     end
     
     if has_labels then
-        table.insert(info_lines, "────────────")
-        table.insert(info_lines, "LABELS:")
+        table.insert(info_lines, separator)
+        table.insert(info_lines, BOX_V .. " LABELS:")
         
         local label_count = 0
         for slice_key, label_data in pairs(saved_labels) do
             if label_count >= 4 then
-                table.insert(info_lines, "  ... more")
+                table.insert(info_lines, BOX_V .. "   ... more")
                 break
             end
             
             local label_str = label_data.label or ""
             local label2_str = label_data.label2 or ""
-            local bp_str = label_data.breakpoint and " (bp)" or ""
+            local bp_str = label_data.breakpoint and " (breakpoint)" or ""
             
             if label_str ~= "" and label_str ~= "---------" then
-                local display = slice_key .. ": " .. label_str:sub(1, 8)
+                local display = slice_key .. ": " .. label_str:sub(1, 12)
                 if label2_str ~= "" and label2_str ~= "---------" then
-                    display = display .. "/" .. label2_str:sub(1, 4)
+                    display = display .. "/" .. label2_str:sub(1, 6)
                 end
                 display = display .. bp_str
-                table.insert(info_lines, "  " .. display)
+                table.insert(info_lines, BOX_V .. " " .. display)
                 label_count = label_count + 1
             end
         end
     end
     
-    -- ═══ TAGS & COLOR ═══
+    -- === TAGS & COLOR ===
     local current_tags = symbol_data.tags or {}
     local current_color = symbol_data.color or ""
     
     if #current_tags > 0 or current_color ~= "" then
-        table.insert(info_lines, "────────────")
+        table.insert(info_lines, separator)
         
         if #current_tags > 0 then
             local non_empty_tags = {}
@@ -771,12 +1209,12 @@ function format_detailed_symbol_info(symbol)
                 end
             end
             if #non_empty_tags > 0 then
-                table.insert(info_lines, "TAGS: " .. table.concat(non_empty_tags, ", "):sub(1, 16))
+                table.insert(info_lines, BOX_V .. " TAGS: " .. table.concat(non_empty_tags, ", "):sub(1, 20))
             end
         end
         
         if current_color ~= "" then
-            table.insert(info_lines, "COLOR: " .. current_color)
+            table.insert(info_lines, BOX_V .. " COLOR: " .. current_color)
         end
     end
     
@@ -790,7 +1228,7 @@ function toggle_detailed_view(vb)
     
     -- Update toggle button text
     if vb.views.detailed_toggle then
-        vb.views.detailed_toggle.text = detailed_view_enabled and "?" or "i"
+        vb.views.detailed_toggle.text = detailed_view_enabled and "Info*" or "Info"
     end
     
     -- Refresh dialog to rebuild with new view state
@@ -802,9 +1240,29 @@ function toggle_detailed_view(vb)
     print("DEBUG: Detailed view toggled to " .. (detailed_view_enabled and "enabled" or "disabled"))
 end
 
+-- Phase 4: Toggle dictionary view and refresh dialog
+function toggle_dictionary_view_ui(vb)
+    dictionary_view_enabled = not dictionary_view_enabled
+    
+    -- Update toggle button text
+    if vb.views.dictionary_toggle then
+        vb.views.dictionary_toggle.text = dictionary_view_enabled and "Dict*" or "Dict"
+    end
+    
+    -- Refresh dialog to rebuild with new view state (reorders symbols)
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    print("DEBUG: Dictionary view toggled to " .. (dictionary_view_enabled and "enabled" or "disabled"))
+end
+
 -- Expand a symbol to show detailed info (collapse others)
 function expand_symbol_detail(symbol, vb)
-    if expanded_symbol == symbol then
+    local was_expanded = (expanded_symbol == symbol)
+    
+    if was_expanded then
         -- Clicking same symbol collapses it
         expanded_symbol = nil
     else
@@ -812,15 +1270,18 @@ function expand_symbol_detail(symbol, vb)
         expanded_symbol = symbol
     end
     
-    -- Update visibility of all detail containers
-    for _, s in ipairs(available_symbols) do
-        local detail_container = vb.views["detail_container_" .. s]
-        if detail_container then
-            detail_container.visible = (s == expanded_symbol)
-        end
+    print("DEBUG: Expanded symbol: " .. (expanded_symbol or "none"))
+    
+    -- Preserve any unsaved tag inputs before refresh
+    if current_dialog_vb then
+        preserve_unsaved_tag_inputs(nil, current_dialog_vb)
     end
     
-    print("DEBUG: Expanded symbol: " .. (expanded_symbol or "none"))
+    -- Refresh dialog to properly resize - visibility changes don't reclaim space
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
 end
 
 function delete_symbol(symbol, vb)
@@ -1140,17 +1601,17 @@ function create_tag_input_row(symbol, tag_index, tag_text, is_saved, vb)
     return vb:row {
         id = "tag_row_" .. symbol .. "_" .. tag_index,
         spacing = 2,
-        width = 102,  -- Fixed width to prevent expansion (80 + 20 + 2 spacing)
+        width = 122,  -- Fixed width to match symbol column
         
         -- Container for the input/display area to maintain consistent width
         vb:column {
-            width = 80,
+            width = 98,
             height = 20,
             
             -- Textfield (for editing)
             vb:textfield {
                 id = "tag_field_" .. symbol .. "_" .. tag_index,
-                width = 80,
+                width = 98,
                 height = 20,
                 text = tag_text or "",
                 visible = not (is_saved and tag_text and tag_text ~= "")
@@ -1159,7 +1620,7 @@ function create_tag_input_row(symbol, tag_index, tag_text, is_saved, vb)
             -- Text display (for saved state) - wrapped in aligner for consistent positioning
             vb:horizontal_aligner {
                 mode = "left",
-                width = 80,
+                width = 98,
                 height = 20,
                 vb:text {
                     id = "tag_text_" .. symbol .. "_" .. tag_index,
@@ -1175,7 +1636,7 @@ function create_tag_input_row(symbol, tag_index, tag_text, is_saved, vb)
         vb:button {
             id = "tag_save_" .. symbol .. "_" .. tag_index,
             text = (is_saved and tag_text and tag_text ~= "") and "[*]" or "[ ]",
-            width = 20,
+            width = 22,
             height = 20,
             tooltip = (is_saved and tag_text and tag_text ~= "") and "Click to edit tag" or "Click to save tag",
             notifier = function()
@@ -2222,7 +2683,8 @@ function export_global_alphabet_csv()
     end
     
     -- Write CSV header - expanded to include content type and enhanced content detection
-    file:write("Symbol,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
+    -- Phase 4: Added Dictionary column
+    file:write("Symbol,Dictionary,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
 
     -- Write data for each symbol
     for symbol, symbol_data in pairs(global_symbol_registry) do
@@ -2232,6 +2694,9 @@ function export_global_alphabet_csv()
         local symbol_type = symbol_data.symbol_type or "breakpoint_created"
         local symbol_color = symbol_data.color or ""
         local symbol_tags = symbol_data.tags or {}
+        
+        -- Phase 4: Get dictionary for this symbol
+        local symbol_dictionary = get_dictionary_for_symbol(symbol) or ""
         
         -- Convert tags array to comma-separated string
         local tags_string = ""
@@ -2243,7 +2708,7 @@ function export_global_alphabet_csv()
             local count = 0
             for _ in pairs(saved_labels) do count = count + 1 end
             return count
-        end)() .. " labels, tags: " .. tags_string .. ", and color: " .. symbol_color)
+        end)() .. " labels, tags: " .. tags_string .. ", color: " .. symbol_color .. ", dictionary: " .. symbol_dictionary)
         
         -- Debug: Show available labels for this symbol
         for hex_key, label_data in pairs(saved_labels) do
@@ -2358,6 +2823,7 @@ function export_global_alphabet_csv()
 
                 local values = {
                     symbol or "",
+                    symbol_dictionary or "",  -- Phase 4: Dictionary column
                     symbol_type or "",
                     tags_string or "",  -- Use comma-separated tags string
                     symbol_color or "",
@@ -2435,12 +2901,16 @@ function export_global_alphabet_json()
         local saved_labels = symbol_data.saved_labels or {}
         local symbol_type = symbol_data.symbol_type or "breakpoint_created"
         
+        -- Phase 4: Get dictionary for this symbol
+        local symbol_dictionary = get_dictionary_for_symbol(symbol) or ""
+        
         -- Build symbol entry with all metadata
         local symbol_entry = {
             symbol_type = symbol_type,
             instrument_index = instrument_index,
             tags = symbol_data.tags or {},  -- Store as array
             color = symbol_data.color or "",
+            dictionary = symbol_dictionary,  -- Phase 4: Add dictionary
             notes = {},
             timing_data = {}
         }
@@ -2537,6 +3007,18 @@ function export_global_alphabet_json()
         end
         
         export_data.symbols[symbol] = symbol_entry
+    end
+    
+    -- Phase 4: Export dictionaries
+    export_data.dictionaries = {}
+    for dict_name, dict_data in pairs(symbol_dictionaries) do
+        export_data.dictionaries[dict_name] = {
+            name = dict_data.name,
+            color = dict_data.color or "",
+            symbols = dict_data.symbols or {},
+            description = dict_data.description or "",
+            created_at = dict_data.created_at
+        }
     end
     
     -- Write JSON
@@ -2663,8 +3145,9 @@ function import_global_alphabet_csv()
     local column_positions = {}
     
     -- Updated expected columns to include content type fields, all 8 effect columns, and all 12 note columns
+    -- Phase 4: Added dictionary column
     local expected_columns = {
-        "symbol", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
+        "symbol", "dictionary", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
         "timingline", "timingdelay", "originaldistance", "notevalue", "volumevalue", "panningvalue", 
         "effectnumber", "effectamount", "hasnote", "contenttype",
         "effectcolumn1number", "effectcolumn1amount", "effectcolumn2number", "effectcolumn2amount",
@@ -2725,6 +3208,12 @@ function import_global_alphabet_csv()
                 local tags_string = unescape_csv_field(fields[column_positions.tags] or "")
                 local color = unescape_csv_field(fields[column_positions.color] or "")
                 local instrument_index = tonumber(unescape_csv_field(fields[column_positions.instrumentindex] or "1"))
+                
+                -- Phase 4: Extract dictionary
+                local dictionary = ""
+                if column_positions.dictionary and fields[column_positions.dictionary] then
+                    dictionary = unescape_csv_field(fields[column_positions.dictionary])
+                end
                 
                 -- Parse tags string into array
                 local tags = {}
@@ -2841,6 +3330,7 @@ function import_global_alphabet_csv()
                             instrument_index = instrument_index,
                             tags = tags,  -- Store tags array
                             color = color,
+                            dictionary = dictionary,  -- Phase 4: Store dictionary
                             timing_data = {},
                             saved_labels = {},
                             source_metadata = nil
@@ -3069,6 +3559,15 @@ function import_global_alphabet_csv()
         -- Update global registry
         global_symbol_registry[symbol] = registry_entry
         
+        -- Phase 4: Assign to dictionary if specified
+        if symbol_data.dictionary and symbol_data.dictionary ~= "" then
+            -- Create dictionary if it doesn't exist
+            if not symbol_dictionaries[symbol_data.dictionary] then
+                create_dictionary(symbol_data.dictionary, "", "")
+            end
+            add_symbol_to_dictionary(symbol, symbol_data.dictionary)
+        end
+        
         local label_count = 0
         for _ in pairs(symbol_data.saved_labels) do label_count = label_count + 1 end
         print("DEBUG: Imported symbol " .. symbol .. " with " .. label_count .. " labels")
@@ -3141,6 +3640,7 @@ function import_global_alphabet_json()
                 tags = symbol_data.category ~= "" and {symbol_data.category} or {}
             end
             local color = symbol_data.color or ""
+            local dictionary = symbol_data.dictionary or ""  -- Phase 4: Extract dictionary
             local timing_data = {}
             local saved_labels = {}
             local notes = {}
@@ -3321,6 +3821,15 @@ function import_global_alphabet_json()
                 -- Update global registry
                 global_symbol_registry[symbol:upper()] = registry_entry
                 
+                -- Phase 4: Assign to dictionary if specified
+                if dictionary and dictionary ~= "" then
+                    -- Create dictionary if it doesn't exist
+                    if not symbol_dictionaries[dictionary] then
+                        create_dictionary(dictionary, "", "")
+                    end
+                    add_symbol_to_dictionary(symbol:upper(), dictionary)
+                end
+                
                 imported_count = imported_count + 1
             end
         end
@@ -3331,10 +3840,43 @@ function import_global_alphabet_json()
         return
     end
     
+    -- Phase 4: Import dictionaries if present
+    local dict_count = 0
+    if import_data.dictionaries and type(import_data.dictionaries) == "table" then
+        for dict_name, dict_data in pairs(import_data.dictionaries) do
+            if type(dict_data) == "table" then
+                -- Create or update dictionary
+                if not symbol_dictionaries[dict_name] then
+                    symbol_dictionaries[dict_name] = {
+                        name = dict_name,
+                        color = dict_data.color or "",
+                        symbols = {},  -- Symbols are assigned via symbol import
+                        created_at = dict_data.created_at or os.time(),
+                        description = dict_data.description or ""
+                    }
+                else
+                    -- Update existing dictionary properties
+                    symbol_dictionaries[dict_name].color = dict_data.color or symbol_dictionaries[dict_name].color
+                    symbol_dictionaries[dict_name].description = dict_data.description or symbol_dictionaries[dict_name].description
+                end
+                dict_count = dict_count + 1
+            end
+        end
+        if dict_count > 0 then
+            save_dictionaries()
+            print("DEBUG: Imported " .. dict_count .. " dictionaries from JSON")
+        end
+    end
+    
     -- Save to preferences
     save_global_symbol_registry()
     
-    renoise.app():show_status(string.format("Imported %d symbols from JSON", imported_count))
+    local status_msg = string.format("Imported %d symbols", imported_count)
+    if dict_count > 0 then
+        status_msg = status_msg .. string.format(" and %d dictionaries", dict_count)
+    end
+    status_msg = status_msg .. " from JSON"
+    renoise.app():show_status(status_msg)
     
     -- Refresh main dialog if open
     if dialog and dialog.visible then
@@ -3785,6 +4327,27 @@ local function get_mapped_symbols()
     return mapped
 end
 
+-- Calculate the full right column width based on active view modes
+local function calculate_right_column_width()
+    local base_grid_width = 500
+    local width_padding = 0
+    if category_view_enabled then width_padding = width_padding + 15 end
+    if organize_view_enabled then width_padding = width_padding + 15 end
+    if detailed_view_enabled then width_padding = width_padding + 10 end
+    -- Note: dictionary_view does NOT add to per-symbol padding
+    local final_width = base_grid_width + (width_padding * 4)
+    -- Add extra container space for dictionary view (not per-symbol)
+    if dictionary_view_enabled then
+        final_width = final_width + 40  -- Extra container padding for dictionary elements
+    end
+    -- Add extra width for the single expanded symbol's detail box
+    if detailed_view_enabled and expanded_symbol then
+        final_width = final_width + 80  -- Extra width for one expanded detail box
+    end
+    print("DEBUG: calculate_right_column_width() -> " .. final_width .. " (padding=" .. width_padding .. ", tag=" .. tostring(category_view_enabled) .. ", org=" .. tostring(organize_view_enabled) .. ", info=" .. tostring(detailed_view_enabled) .. ", expanded=" .. tostring(expanded_symbol) .. ", dict=" .. tostring(dictionary_view_enabled) .. ")")
+    return final_width
+end
+
 -- Toggle right column collapse state
 local function toggle_right_column_collapse(vb)
     right_column_collapsed = not right_column_collapsed
@@ -3792,6 +4355,11 @@ local function toggle_right_column_collapse(vb)
     -- Update collapse button text
     if vb.views.right_collapse_button then
         vb.views.right_collapse_button.text = right_column_collapsed and "+" or "-"
+    end
+    
+    -- Toggle visibility of view mode toggles (hidden when collapsed)
+    if vb.views.view_toggles_row then
+        vb.views.view_toggles_row.visible = not right_column_collapsed
     end
     
     -- Toggle visibility of collapsible elements
@@ -3814,8 +4382,8 @@ local function toggle_right_column_collapse(vb)
             local compact_width = math.max(calculated_width, 140) -- Minimum width for collapse button and text
             vb.views.right_column_container.width = compact_width
         else
-            -- Restore full width
-            vb.views.right_column_container.width = 500
+            -- Restore full width based on active view modes
+            vb.views.right_column_container.width = calculate_right_column_width()
         end
     end
 end
@@ -3856,6 +4424,37 @@ local function create_compact_right_column(vb)
                 compact_content:add_child(current_row)
             end
             
+            -- Create a column for each symbol to hold color bar + button
+            local symbol_col = vb:column {
+                spacing = 0
+            }
+            
+            -- Add dictionary color bar if symbol has a dictionary
+            local symbol_dictionary = get_dictionary_for_symbol(symbol)
+            if symbol_dictionary then
+                local dict_data = get_dictionary_data(symbol_dictionary)
+                local dict_color = dict_data and dict_data.color or ""
+                
+                if dict_color and dict_color ~= "" and color_definitions[dict_color] then
+                    local bar_color = color_definitions[dict_color].original
+                    symbol_col:add_child(vb:canvas {
+                        width = button_width,
+                        height = 3,
+                        mode = "plain",
+                        render = function(ctx)
+                            ctx.fill_color = bar_color
+                            ctx:fill_rect(0, 0, ctx.size.width, ctx.size.height)
+                        end
+                    })
+                else
+                    -- Dictionary exists but no color - add subtle indicator
+                    symbol_col:add_child(vb:space { height = 3 })
+                end
+            else
+                -- No dictionary - add space for alignment
+                symbol_col:add_child(vb:space { height = 3 })
+            end
+            
             local symbol_button = vb:button {
                 text = symbol,
                 width = button_width,
@@ -3874,7 +4473,8 @@ local function create_compact_right_column(vb)
                 symbol_button.color = color_definitions[symbol_color].darker
             end
             
-            current_row:add_child(symbol_button)
+            symbol_col:add_child(symbol_button)
+            current_row:add_child(symbol_col)
         end
     else
         compact_content:add_child(
@@ -4678,49 +5278,74 @@ local function create_symbol_editor_dialog()
                 id = "right_column_container",
                 style = "group",
                 margin = 10,
-                width = 500,
+                width = calculate_right_column_width(),
 
                 
-                -- Right column header with collapse, category toggle, organize toggle, and detailed toggle buttons
+                -- Right column header with view toggles and collapse button
                 vb:row {
-                    spacing = 5,
-                    vb:button {
-                        id = "category_toggle",
-                        text = category_view_enabled and "..." or "=",
-                        width = 25,
-                        height = 25,
-                        tooltip = "Toggle tag view",
-                        notifier = function()
-                            toggle_tag_view(vb)
-                        end
+                    spacing = 3,
+                    
+                    -- View mode toggles group (hidden when collapsed - modes require full view to work)
+                    vb:row {
+                        id = "view_toggles_row",
+                        visible = not right_column_collapsed,
+                        spacing = 2,
+                        vb:text {
+                            text = "View:",
+                            style = "disabled",
+                            width = 32
+                        },
+                        vb:button {
+                            id = "category_toggle",
+                            text = category_view_enabled and "Tag*" or "Tag",
+                            width = 35,
+                            height = 22,
+                            tooltip = "Toggle tag editing view - add/edit tags for symbols",
+                            notifier = function()
+                                toggle_tag_view(vb)
+                            end
+                        },
+                        vb:button {
+                            id = "organize_toggle",
+                            text = organize_view_enabled and "Org*" or "Org",
+                            width = 35,
+                            height = 22,
+                            tooltip = "Toggle organize view - move, delete, assign dictionaries",
+                            notifier = function()
+                                toggle_organize_view(vb)
+                            end
+                        },
+                        vb:button {
+                            id = "detailed_toggle",
+                            text = detailed_view_enabled and "Info*" or "Info",
+                            width = 35,
+                            height = 22,
+                            tooltip = "Toggle detailed view - click symbols to expand details",
+                            notifier = function()
+                                toggle_detailed_view(vb)
+                            end
+                        },
+                        vb:button {
+                            id = "dictionary_toggle",
+                            text = dictionary_view_enabled and "Dict*" or "Dict",
+                            width = 35,
+                            height = 22,
+                            tooltip = "Toggle dictionary view - group symbols by dictionary",
+                            notifier = function()
+                                toggle_dictionary_view_ui(vb)
+                            end
+                        }
                     },
-                    vb:button {
-                        id = "organize_toggle",
-                        text = organize_view_enabled and "#" or "$",
-                        width = 25,
-                        height = 25,
-                        tooltip = "Toggle organize view",
-                        notifier = function()
-                            toggle_organize_view(vb)
-                        end
-                    },
-                    vb:button {
-                        id = "detailed_toggle",
-                        text = detailed_view_enabled and "?" or "i",
-                        width = 25,
-                        height = 25,
-                        tooltip = "Toggle detailed view (click symbols to expand)",
-                        notifier = function()
-                            toggle_detailed_view(vb)
-                        end
-                    },
+                    
+                    -- Collapse button aligned right
                     vb:horizontal_aligner {
                         mode = "right",
                         vb:button {
                             id = "right_collapse_button",
                             text = right_column_collapsed and "+" or "-",
                             width = 25,
-                            height = 25,
+                            height = 22,
+                            tooltip = right_column_collapsed and "Expand symbol grid" or "Collapse symbol grid",
                             notifier = function()
                                 toggle_right_column_collapse(vb)
                             end
@@ -4808,9 +5433,48 @@ local function create_symbol_editor_dialog()
                     
 -- Symbol grid for current page (3x4 = 12 symbols per page)
                     (function()
-                        local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                        -- Phase 4: Use dictionary-ordered symbols when dictionary view is enabled
+                        local symbols_to_display
+                        if dictionary_view_enabled then
+                            symbols_to_display = get_symbols_ordered_by_dictionary()
+                        else
+                            -- Standard alphabet order
+                            local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+                            symbols_to_display = {}
+                            for _, s in ipairs(all_symbols) do
+                                table.insert(symbols_to_display, {symbol = s, dictionary = get_dictionary_for_symbol(s)})
+                            end
+                        end
+                        
                         local start_index = (symbol_pagination.current_page - 1) * symbol_pagination.symbols_per_page + 1
-                        local end_index = math.min(start_index + symbol_pagination.symbols_per_page - 1, #all_symbols)
+                        local end_index = math.min(start_index + symbol_pagination.symbols_per_page - 1, #symbols_to_display)
+                        
+                        -- Dynamic width calculation based on active view modes
+                        local base_symbol_width = 120
+                        local base_grid_width = 500
+                        local width_padding = 0
+                        
+                        if category_view_enabled then
+                            width_padding = width_padding + 15  -- Extra for tag inputs
+                        end
+                        if organize_view_enabled then
+                            width_padding = width_padding + 15  -- Extra for organize controls
+                        end
+                        if detailed_view_enabled then
+                            width_padding = width_padding + 10  -- Extra for detail button
+                        end
+                        -- Note: dictionary_view does NOT add to symbol width - only to container
+                        
+                        local symbol_col_width = base_symbol_width + width_padding
+                        local grid_width = base_grid_width + (width_padding * 4)  -- 4 columns
+                        -- Add extra container space for dictionary view (not per-symbol)
+                        if dictionary_view_enabled then
+                            grid_width = grid_width + 40  -- Extra container padding for dictionary elements
+                        end
+                        -- Add extra width for the single expanded symbol's detail box
+                        if detailed_view_enabled and expanded_symbol then
+                            grid_width = grid_width + 80  -- Extra width for one expanded detail box
+                        end
                         
                         -- Debug: Check global symbol registry state
                         print("DEBUG: Global symbol registry has " .. table.count(global_symbol_registry) .. " symbols")
@@ -4821,8 +5485,8 @@ local function create_symbol_editor_dialog()
                         
                         local grid_column = vb:column {
                             spacing = 5,
-                            width = 500,
-                            height = 240
+                            width = grid_width,
+                            height = 260
                         }
                         
                         -- Create 3x4 grid for current page
@@ -4832,15 +5496,71 @@ local function create_symbol_editor_dialog()
                                 local symbol_index = start_index + (row - 1) * 4 + (col - 1)
                                 
                                 if symbol_index <= end_index then
-                                    local symbol = all_symbols[symbol_index]
+                                    -- Phase 4: Get symbol info from display structure
+                                    local symbol_info = symbols_to_display[symbol_index]
+                                    local symbol = symbol_info.symbol
+                                    local symbol_dictionary = symbol_info.dictionary
+                                    
+                                    -- Calculate this symbol's column width (wider if expanded)
+                                    local this_symbol_col_width = symbol_col_width
+                                    if detailed_view_enabled and expanded_symbol == symbol then
+                                        this_symbol_col_width = symbol_col_width + 80  -- Extra width for expanded detail box
+                                    end
+                                    
                                     local symbol_col = vb:column {
-                                        width = 120,
+                                        width = this_symbol_col_width,
                                         margin = 3,
                                         style = "panel"
                                     }
 
-                                    print("DEBUG: Creating symbol column for " .. symbol .. ", category_view_enabled=" .. tostring(category_view_enabled) .. ", detailed_view_enabled=" .. tostring(detailed_view_enabled))
+                                    print("DEBUG: Creating symbol column for " .. symbol .. ", width=" .. this_symbol_col_width)
                                     
+                                    -- Phase 4: Add dictionary indicator at TOP when dictionary view is enabled
+                                    if dictionary_view_enabled then
+                                        if symbol_dictionary then
+                                            local dict_data = get_dictionary_data(symbol_dictionary)
+                                            local dict_color = dict_data and dict_data.color or ""
+                                            
+                                            -- Add colored bar using canvas if dictionary has a color
+                                            if dict_color and dict_color ~= "" and color_definitions[dict_color] then
+                                                local bar_color = color_definitions[dict_color].original
+                                                
+                                                symbol_col:add_child(vb:canvas {
+                                                    width = this_symbol_col_width - 6,
+                                                    height = 4,
+                                                    mode = "plain",
+                                                    render = function(ctx)
+                                                        ctx.fill_color = bar_color
+                                                        ctx:fill_rect(0, 0, ctx.size.width, ctx.size.height)
+                                                    end
+                                                })
+                                            else
+                                                -- No color - add empty spacer for alignment
+                                                symbol_col:add_child(vb:space { height = 4 })
+                                            end
+                                            
+                                            -- Show dictionary name abbreviation
+                                            local abbrev = symbol_dictionary:sub(1, 14)
+                                            if #symbol_dictionary > 14 then abbrev = abbrev .. ".." end
+                                            
+                                            symbol_col:add_child(vb:text {
+                                                text = abbrev,
+                                                style = "disabled",
+                                                width = this_symbol_col_width - 6,
+                                                align = "center"
+                                            })
+                                        else
+                                            -- Ungrouped indicator - no colored bar
+                                            symbol_col:add_child(vb:space { height = 4 })
+                                            symbol_col:add_child(vb:text {
+                                                text = "(ungrouped)",
+                                                style = "disabled",
+                                                width = this_symbol_col_width - 6,
+                                                align = "center"
+                                            })
+                                        end
+                                        symbol_col:add_child(vb:space { height = 2 })
+                                    end
                                     
                                     -- Add placement button if symbol exists, otherwise show disabled text
                                     if current_formatted_labels[symbol] and #current_formatted_labels[symbol] > 0 then
@@ -4904,6 +5624,7 @@ local function create_symbol_editor_dialog()
                                         )
                                     else
                                         -- Show disabled text for symbols that don't exist
+                                        -- Note: Dictionary indicator is already added at top of symbol_col
                                         symbol_col:add_child(
                                             vb:horizontal_aligner {
                                                 mode = "center",
@@ -4950,7 +5671,7 @@ local function create_symbol_editor_dialog()
                                             visible = is_expanded,
                                             style = "border",
                                             margin = 2,
-                                            width = 112
+                                            width = this_symbol_col_width - 8  -- Use dynamic width minus margin
                                         }
                                         
                                         -- Add separator
@@ -5062,17 +5783,17 @@ local function create_symbol_editor_dialog()
                                             id = "color_row_" .. symbol,
                                             visible = category_view_enabled,  -- Same visibility as tags
                                             spacing = 2,
-                                            width = 102,  -- Fixed width to prevent expansion (80 + 20 + 2 spacing)
+                                            width = 122,  -- Fixed width to match symbol column
                                             
                                             -- Container for the popup/display area to maintain consistent width
                                             vb:column {
-                                                width = 80,
+                                                width = 98,
                                                 height = 20,
                                                 
                                                 -- Popup (for editing)
                                                 vb:popup {
                                                     id = "color_popup_" .. symbol,
-                                                    width = 80,
+                                                    width = 98,
                                                     height = 20,
                                                     items = color_dropdown_items,
                                                     value = (function()
@@ -5085,7 +5806,7 @@ local function create_symbol_editor_dialog()
                                                 -- Text display (for saved state) - wrapped in aligner for consistent positioning
                                                 vb:horizontal_aligner {
                                                     mode = "left",
-                                                    width = 80,
+                                                    width = 98,
                                                     height = 20,
                                                     vb:text {
                                                         id = "color_text_" .. symbol,
@@ -5101,7 +5822,7 @@ local function create_symbol_editor_dialog()
                                             vb:button {
                                                 id = "color_save_" .. symbol,
                                                 text = (color_is_saved and current_color and current_color ~= "") and "[*]" or "[ ]",
-                                                width = 20,
+                                                width = 22,
                                                 height = 20,
                                                 tooltip = (color_is_saved and current_color and current_color ~= "") and "Click to edit color" or "Click to save color",
                                                 notifier = function()
@@ -5153,6 +5874,9 @@ local function create_symbol_editor_dialog()
                                     -- Update button states after container is created
                                     update_tag_button_states(symbol, vb)
                                     
+                                    -- Calculate organize row width based on symbol column width
+                                    local organize_row_width = this_symbol_col_width - 8
+                                    
                                     -- NEW: Add organize UI rows (move controls and delete button)
                                     if global_symbol_registry[symbol] then
                                         -- Move controls row (dropdown + lock button)
@@ -5160,12 +5884,12 @@ local function create_symbol_editor_dialog()
                                             id = "move_row_" .. symbol,
                                             visible = organize_view_enabled,
                                             spacing = 2,
-                                            width = 102,
+                                            width = organize_row_width,
                                             
                                             -- Move to dropdown
                                             vb:popup {
                                                 id = "move_dropdown_" .. symbol,
-                                                width = 75,
+                                                width = organize_row_width - 30,
                                                 height = 20,
                                                 items = get_available_symbols_for_moving(symbol),
                                                 value = 1  -- Default to "Select target..."
@@ -5175,7 +5899,7 @@ local function create_symbol_editor_dialog()
                                             vb:button {
                                                 id = "move_lock_" .. symbol,
                                                 text = "->",
-                                                width = 25,
+                                                width = 28,
                                                 height = 20,
                                                 tooltip = "Move symbol " .. symbol .. " to selected position",
                                                 notifier = function()
@@ -5208,11 +5932,11 @@ local function create_symbol_editor_dialog()
                                             id = "delete_row_" .. symbol,
                                             visible = organize_view_enabled,
                                             spacing = 2,
-                                            width = 102,
+                                            width = organize_row_width,
                                             
                                             vb:button {
                                                 text = "Delete",
-                                                width = 102,
+                                                width = organize_row_width,
                                                 height = 20,
                                                 color = {0x80, 0x00, 0x00}, -- Dark red color to indicate destructive action
                                                 tooltip = "Delete symbol " .. symbol .. " permanently",
@@ -5223,17 +5947,72 @@ local function create_symbol_editor_dialog()
                                         }
                                         
                                         symbol_col:add_child(delete_row)
+                                        
+                                        -- Phase 4: Dictionary assignment row
+                                        local dict_row = vb:row {
+                                            id = "dict_row_" .. symbol,
+                                            visible = organize_view_enabled,
+                                            spacing = 2,
+                                            width = organize_row_width,
+                                            
+                                            vb:text {
+                                                text = "Dict:",
+                                                width = 30,
+                                                style = "disabled"
+                                            },
+                                            
+                                            vb:popup {
+                                                id = "dict_dropdown_" .. symbol,
+                                                width = organize_row_width - 32,
+                                                height = 20,
+                                                items = (function()
+                                                    local items = {"-- None --"}
+                                                    local dict_names = get_all_dictionaries()
+                                                    for _, name in ipairs(dict_names) do
+                                                        table.insert(items, name)
+                                                    end
+                                                    return items
+                                                end)(),
+                                                value = (function()
+                                                    local current_dict = get_dictionary_for_symbol(symbol)
+                                                    if current_dict then
+                                                        local dict_names = get_all_dictionaries()
+                                                        for i, name in ipairs(dict_names) do
+                                                            if name == current_dict then
+                                                                return i + 1  -- +1 for "-- None --"
+                                                            end
+                                                        end
+                                                    end
+                                                    return 1
+                                                end)(),
+                                                notifier = function(new_value)
+                                                    if new_value == 1 then
+                                                        -- Remove from dictionary
+                                                        remove_symbol_from_current_dictionary(symbol)
+                                                    else
+                                                        local dict_names = get_all_dictionaries()
+                                                        local selected_dict = dict_names[new_value - 1]
+                                                        if selected_dict then
+                                                            add_symbol_to_dictionary(symbol, selected_dict)
+                                                        end
+                                                    end
+                                                    renoise.app():show_status("Dictionary updated for " .. symbol)
+                                                end
+                                            }
+                                        }
+                                        
+                                        symbol_col:add_child(dict_row)
                                     else
                                         -- Empty placeholder for symbols that don't exist
                                         local empty_organize_row = vb:column {
                                             id = "organize_row_" .. symbol,
                                             visible = organize_view_enabled,
-                                            width = 102,
-                                            height = 42,  -- Height for both move and delete rows
+                                            width = organize_row_width,
+                                            height = 62,  -- Height for move, delete, and dict rows
                                             vb:text {
                                                 text = "",
-                                                width = 102,
-                                                height = 42
+                                                width = organize_row_width,
+                                                height = 62
                                             }
                                         }
                                         
@@ -5244,7 +6023,7 @@ local function create_symbol_editor_dialog()
                                 else
                                     -- Empty placeholder
                                     table.insert(row_columns, vb:column {
-                                        width = 120,
+                                        width = symbol_col_width,
                                         height = 60,
                                         margin = 3
                                     })
@@ -5286,23 +6065,36 @@ local function create_symbol_editor_dialog()
                         },
                         
                         -- Spacer to push buttons to the right
-                        vb:space { width = 1 },
+                        vb:space { width = 5 },
                         
                         -- Export/Import Alphabet buttons (right side)
                         vb:horizontal_aligner {
                             mode = "right",
                             vb:row {
-                                spacing = 10,
+                                spacing = 5,
                                 vb:button {
-                                    text = "Export Alphabet",
-                                    width = 120,
+                                    text = "Dictionaries",
+                                    width = 85,
+                                    height = 22,
+                                    tooltip = "Manage symbol dictionaries",
+                                    notifier = function()
+                                        show_dictionary_management_dialog()
+                                    end
+                                },
+                                vb:button {
+                                    text = "Export",
+                                    width = 55,
+                                    height = 22,
+                                    tooltip = "Export alphabet to CSV or JSON",
                                     notifier = function()
                                         export_global_alphabet()
                                     end
                                 },
                                 vb:button {
-                                    text = "Import Alphabet",
-                                    width = 120,
+                                    text = "Import",
+                                    width = 55,
+                                    height = 22,
+                                    tooltip = "Import alphabet from CSV or JSON",
                                     notifier = function()
                                         import_global_alphabet()
                                     end
@@ -5456,6 +6248,7 @@ function show_main_dialog()
     -- Load global symbol registry on first dialog show
     if not tool_initialized then
         load_global_symbol_registry()
+        load_dictionaries()  -- Phase 4: Load dictionaries after registry
         tool_initialized = true
     else
         -- Ensure tag editing states are up to date
