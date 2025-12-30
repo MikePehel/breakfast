@@ -274,7 +274,8 @@ function selection.calculate_note_distances(notes, selection_data, pattern)
     end
 end
 
--- Apply labels from the current instrument's BreakFast labeler data to a range symbol
+-- Apply labels from BreakFast labeler data to a range symbol
+-- Now supports multi-instrument lookups and both legacy slice-based and new note-based formats
 function selection.apply_labels_to_range_symbol(symbol_data, notes)
     print("DEBUG: Applying labels to range symbol")
     
@@ -283,62 +284,59 @@ function selection.apply_labels_to_range_symbol(symbol_data, notes)
         return {}
     end
     
-    local song = renoise.song()
-    local current_instrument_index = song.selected_instrument_index
-    
-    -- Get saved labels for the currently selected instrument (same as breakpoint workflow)
     local labeler = require("labeler")
-    local saved_labels = labeler.get_labels_for_instrument(current_instrument_index)
-    
-    print("DEBUG: Current instrument index: " .. current_instrument_index)
-    print("DEBUG: Available saved_labels:")
-    for hex_key, label_data in pairs(saved_labels or {}) do
-        print("DEBUG:   " .. hex_key .. " -> " .. (label_data.label or ""))
-    end
-    
-    if not saved_labels or next(saved_labels) == nil then
-        print("DEBUG: No saved labels found for current instrument " .. current_instrument_index)
-        return {}
-    end
-    
     local applied_labels = {}
     local labels_applied_count = 0
     
-    -- For each note in the captured selection, map note values to slice labels
+    -- For each note in the captured selection, look up labels from the note's instrument
     for i, note in ipairs(notes) do
-        local note_value = note.note_value
-        local pattern_instrument_index = note.instrument_value + 1
-        
-        print("DEBUG: Checking note " .. i .. " from pattern instrument " .. pattern_instrument_index .. " with note_value " .. note_value)
-        
-        -- Calculate slice index from note value
-        -- Based on your specification: slice 1 (hex key 01) = note value 37
-        -- So: note 37 = slice 1, note 38 = slice 2, etc.
-        local slice_index = 0  -- Default to main sample
-        
-        if note_value >= 37 then
-            slice_index = note_value - 36  -- note 37 = slice 1, note 38 = slice 2, etc.
+        if not note.has_note then
+            goto continue
         end
         
-        print("DEBUG: Note mapping - note_value " .. note_value .. " -> slice_index " .. slice_index)
+        local note_value = note.note_value
+        local instrument_index = note.instrument_value + 1  -- Convert to 1-based
         
-        -- Convert to hex key format (same as labeler system)
-        local hex_key = string.format("%02X", slice_index + 1)  -- +1 because labeler uses 1-based indexing
+        print("DEBUG: Checking note " .. i .. " from instrument " .. instrument_index .. " with note_value " .. note_value)
         
-        print("DEBUG: Note value " .. note_value .. " maps to slice " .. slice_index .. " (hex_key: " .. hex_key .. ")")
+        -- Get saved labels for THIS note's instrument (not just the selected instrument)
+        local saved_labels = labeler.get_labels_for_instrument(instrument_index)
         
-        -- Check if we have a saved label for this slice in the current instrument
-        if saved_labels[hex_key] then
-            applied_labels[hex_key] = {
-                label = saved_labels[hex_key].label or "",
-                breakpoint = saved_labels[hex_key].breakpoint or false,
-                instrument_index = current_instrument_index  -- Use current instrument, not pattern instrument
+        if not saved_labels or next(saved_labels) == nil then
+            print("DEBUG: No saved labels for instrument " .. instrument_index)
+            goto continue
+        end
+        
+        -- Try slice-based key first (most common for sliced samples)
+        -- Slice 1 = note 37, key "01"; Slice 2 = note 38, key "02"
+        local slice_key = nil
+        if note_value >= 37 then
+            slice_key = string.format("%02X", note_value - 36)
+        end
+        
+        -- Also try note-based key (for keyzone mappings)
+        local note_key = string.format("%02X", note_value)
+        
+        local label_data = (slice_key and saved_labels[slice_key]) or saved_labels[note_key] or nil
+        
+        if label_data then
+            -- Use the key that was found for storage
+            local storage_key = (slice_key and saved_labels[slice_key]) and slice_key or note_key
+            
+            applied_labels[storage_key] = {
+                label = label_data.label or "---------",
+                label2 = label_data.label2 or "---------",
+                breakpoint = label_data.breakpoint or false,
+                instrument_index = instrument_index,
+                note_value = note_value
             }
             labels_applied_count = labels_applied_count + 1
-            print("DEBUG: Applied label '" .. (saved_labels[hex_key].label or "") .. "' from current instrument " .. current_instrument_index .. " slice " .. slice_index)
+            print("DEBUG: Applied label '" .. (label_data.label or "") .. "' from instrument " .. instrument_index .. " note " .. note_value .. " (key: " .. storage_key .. ")")
         else
-            print("DEBUG: No label found for slice " .. slice_index .. " (hex_key: " .. hex_key .. ") in current instrument " .. current_instrument_index)
+            print("DEBUG: No label found for note " .. note_value .. " (slice_key: " .. (slice_key or "N/A") .. ", note_key: " .. note_key .. ") in instrument " .. instrument_index)
         end
+        
+        ::continue::
     end
     
     print("DEBUG: Applied " .. labels_applied_count .. " labels to range symbol")
@@ -572,6 +570,7 @@ function selection.clear_range_captured_symbols()
 end
 
 -- Format range symbol for display (similar to syntax.lua formatting)
+-- Updated to handle label format with label2
 function selection.format_range_symbol_labels(symbol_data)
     local labels = {}
     
@@ -581,23 +580,36 @@ function selection.format_range_symbol_labels(symbol_data)
             local note_str = selection.note_value_to_string(timing.note_value)
             local delay_str = string.format("d%02X", timing.new_delay)
             -- Use source_instrument_index - 1 to show the 0-based instrument number as it appears in the pattern
-            local inst_str = string.format("I%02X", (timing.source_instrument_index or 1) - 1)
+            local inst_idx = timing.source_instrument_index or 1
+            local inst_str = string.format("I%02X", inst_idx - 1)
             
             -- Get label from saved_labels if available, otherwise use note value
             local label_str = ""
+            local label2_str = ""
+            
             if symbol_data.saved_labels then
-                -- For range symbols, calculate the slice index from note value (same logic as apply_labels_to_range_symbol)
                 local note_value = timing.note_value
-                local slice_index = 0
-                if note_value >= 37 then
-                    slice_index = note_value - 36
-                end
-                local hex_key = string.format("%02X", slice_index + 1)
                 
-                local label_data = symbol_data.saved_labels[hex_key]
-                if label_data and label_data.label and label_data.label ~= "" then
+                -- Try slice-based key first (most common)
+                -- Slice 1 = note 37, key "01"
+                local slice_key = nil
+                if note_value >= 37 then
+                    slice_key = string.format("%02X", note_value - 36)
+                end
+                
+                -- Also try note-based key
+                local note_key = string.format("%02X", note_value)
+                
+                local label_data = (slice_key and symbol_data.saved_labels[slice_key]) or symbol_data.saved_labels[note_key] or nil
+                
+                if label_data and label_data.label and label_data.label ~= "" and label_data.label ~= "---------" then
                     -- Pad label to consistent width for display
                     label_str = string.format("%-5s", label_data.label:sub(1, 5))
+                    
+                    -- Include label2 if present
+                    if label_data.label2 and label_data.label2 ~= "" and label_data.label2 ~= "---------" then
+                        label2_str = "/" .. label_data.label2:sub(1, 3)
+                    end
                 else
                     -- Use note value instead of underscores when no label exists
                     label_str = string.format("%-5s", note_str:sub(1, 5))
@@ -612,7 +624,7 @@ function selection.format_range_symbol_labels(symbol_data)
             local source_track = symbol_data.source_metadata and symbol_data.source_metadata.track_index or "??"
             local source_str = string.format("P%02X:T%02X", source_pattern - 1, source_track - 1)
             
-            local formatted_label = string.format("%s-%s-%s-%s-%s", line_str, label_str, delay_str, inst_str, source_str)
+            local formatted_label = string.format("%s-%s%s-%s-%s-%s", line_str, label_str, label2_str, delay_str, inst_str, source_str)
             table.insert(labels, formatted_label)
         end
     end

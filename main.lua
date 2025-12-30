@@ -1,4 +1,4 @@
--- main.lua - BreakFast Main Entry Point (Phase 2: Added Substitute Overwrite Behavior)
+-- main.lua - BreakFast Main Entry Point (Phase 2: Audio Preview & Breakpoints from Selection)
 local vb = renoise.ViewBuilder()
 local labeler = require("labeler")
 local breakpoints = require("breakpoints")
@@ -37,7 +37,8 @@ local overflow_behavior = {
     EXTEND = 1,
     NEXT_PATTERN = 2,
     TRUNCATE = 3,
-    LOOP = 4
+    LOOP = 4,
+    INSERT = 5  -- Always inserts a new pattern after current, moves overflow there
 }
 
 local current_overflow_behavior = overflow_behavior.EXTEND
@@ -70,12 +71,16 @@ local current_dialog_vb = nil
 local symbol_button_refs = {} -- Store references to symbol buttons for highlighting
 
 -- Tag system state
-local category_view_enabled = false  -- Toggle state for ≡/… button (keep same name for UI compatibility)
+local category_view_enabled = false  -- Toggle state for category view button (keep same name for UI compatibility)
 local tag_editing_states = {}       -- Track which symbols have saved tags: symbol -> {tag_index -> boolean}
 local color_editing_states = {}     -- Track which symbols have saved colors: symbol -> boolean
 
 -- Organize system state
-local organize_view_enabled = false  -- Toggle state for §/꙱ button (default off)
+local organize_view_enabled = false  -- Toggle state for organize view button (default off)
+
+-- Detailed view state
+local detailed_view_enabled = false  -- Toggle state for detailed view button (default off)
+local expanded_symbol = nil          -- Track which symbol is currently expanded
 
 -- Global symbol registry for cross-instrument symbol management
 local global_symbol_registry = {}
@@ -102,10 +107,37 @@ local color_editing_states = {}
 -- Set up tool preferences for global symbol registry persistence (declare early)
 local preferences = renoise.Document.create("BreakFastPreferences") {
     -- Use a simple string-based storage approach to avoid nested table issues
-    global_symbol_registry_data = ""
+    global_symbol_registry_data = "",
+    custom_labels_data = "",      -- User-defined custom labels (JSON array)
+    show_label2 = false           -- Toggle state for Label 2 column visibility
 }
 
 renoise.tool().preferences = preferences
+
+-- Preference accessor functions for labeler module
+function get_custom_labels_data()
+    if preferences.custom_labels_data and preferences.custom_labels_data.value ~= "" then
+        return preferences.custom_labels_data.value
+    end
+    return ""
+end
+
+function save_custom_labels_data(data)
+    preferences.custom_labels_data.value = data
+end
+
+function get_show_label2()
+    if preferences.show_label2 then
+        return preferences.show_label2.value
+    end
+    return false
+end
+
+function save_show_label2(value)
+    if preferences.show_label2 then
+        preferences.show_label2.value = value
+    end
+end
 
 -- Initialization flag
 local tool_initialized = false
@@ -115,6 +147,15 @@ local symbol_pagination = {
     current_page = 1,
     symbols_per_page = 12, -- 3x4 grid (3 rows, 4 columns)
     total_pages = 1
+}
+
+-- Phase 2: Audio preview state management
+local preview_state = {
+    active = false,
+    instrument_index = nil,
+    track_index = nil,
+    notes = {},  -- List of {note_value, instrument_index} for active preview
+    symbol = nil
 }
 
 -- Serialize a table to a string (simple implementation)
@@ -427,7 +468,7 @@ function toggle_tag_view(vb)
     
     -- Update toggle button text
     if vb.views.category_toggle then
-        vb.views.category_toggle.text = category_view_enabled and "…" or "≡"
+        vb.views.category_toggle.text = category_view_enabled and "..." or "="
     end
     
     -- If toggling OFF, refresh the dialog to show updated tag displays
@@ -463,7 +504,7 @@ function toggle_organize_view(vb)
     
     -- Update toggle button text
     if vb.views.organize_toggle then
-        vb.views.organize_toggle.text = organize_view_enabled and "▬" or "§"
+        vb.views.organize_toggle.text = organize_view_enabled and "#" or "$"
     end
     
     -- Update visibility of all organize elements
@@ -497,6 +538,289 @@ function toggle_organize_view(vb)
     end
     
     print("DEBUG: Organize view toggled to " .. (organize_view_enabled and "enabled" or "disabled"))
+end
+
+-- Format detailed information about a symbol for display
+function format_detailed_symbol_info(symbol)
+    local info_lines = {}
+    
+    -- Check if symbol exists in global registry
+    local symbol_data = global_symbol_registry[symbol]
+    if not symbol_data then
+        table.insert(info_lines, "Symbol not assigned")
+        return info_lines
+    end
+    
+    -- Get break set data
+    local break_set = symbol_data.break_set
+    if not break_set or not break_set.timing then
+        table.insert(info_lines, "No timing data")
+        return info_lines
+    end
+    
+    local note_count = #break_set.timing
+    
+    -- ═══ HEADER ═══
+    table.insert(info_lines, "══ Symbol " .. symbol .. " ══")
+    
+    -- ═══ TYPE & SOURCE ═══
+    local symbol_type = symbol_data.symbol_type or "breakpoint"
+    table.insert(info_lines, "Type: " .. symbol_type)
+    
+    -- Source info (for range_captured symbols)
+    if symbol_data.source_metadata then
+        local src = symbol_data.source_metadata
+        local pattern_idx = src.pattern_index or "??"
+        local track_idx = src.track_index or "??"
+        if type(pattern_idx) == "number" then
+            pattern_idx = string.format("%02X", pattern_idx - 1)
+        end
+        if type(track_idx) == "number" then
+            track_idx = string.format("%02X", track_idx - 1)
+        end
+        table.insert(info_lines, "Source: P" .. pattern_idx .. " T" .. track_idx)
+        
+        -- Capture timestamp
+        if src.capture_info and src.capture_info.capture_timestamp then
+            table.insert(info_lines, "Captured: " .. src.capture_info.capture_timestamp)
+        end
+    end
+    
+    -- Instrument info
+    local instrument_index = symbol_data.instrument_index
+    if instrument_index then
+        local song = renoise.song()
+        if song and song.instruments[instrument_index] then
+            local inst_name = song.instruments[instrument_index].name
+            if inst_name and inst_name ~= "" then
+                table.insert(info_lines, string.format("Inst: %02X %s", instrument_index - 1, inst_name:sub(1, 14)))
+            else
+                table.insert(info_lines, string.format("Inst: %02X", instrument_index - 1))
+            end
+        end
+    end
+    
+    -- ═══ STATISTICS ═══
+    -- Calculate timing span and stats
+    local min_line, max_line = 1, 1
+    local total_delay = 0
+    local total_distance = 0
+    local unique_instruments = {}
+    local unique_notes = {}
+    
+    if note_count > 0 then
+        min_line = break_set.timing[1].relative_line or 1
+        max_line = min_line
+        
+        for _, timing in ipairs(break_set.timing) do
+            local line = timing.relative_line or 1
+            if line < min_line then min_line = line end
+            if line > max_line then max_line = line end
+            total_delay = total_delay + (timing.new_delay or 0)
+            total_distance = total_distance + (timing.original_distance or 0)
+            
+            -- Track unique instruments
+            local inst_val = timing.source_instrument_index or timing.instrument_value
+            if inst_val then
+                unique_instruments[inst_val] = true
+            end
+            
+            -- Track unique notes
+            local note_val = timing.note_value or (36 + (timing.instrument_value or 0))
+            if note_val then
+                unique_notes[note_val] = true
+            end
+        end
+    end
+    
+    local span = max_line - min_line + 1
+    table.insert(info_lines, string.format("Lines: %d | Notes: %d", span, note_count))
+    
+    -- ═══ NOTES SECTION ═══
+    table.insert(info_lines, "────────────")
+    table.insert(info_lines, "NOTES:")
+    
+    -- Get labels for this instrument
+    local saved_labels = symbol_data.saved_labels or {}
+    if instrument_index then
+        local inst_labels = labeler.get_labels_for_instrument(instrument_index)
+        if inst_labels then
+            for k, v in pairs(inst_labels) do
+                saved_labels[k] = v
+            end
+        end
+    end
+    
+    -- Note name lookup
+    local note_names = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"}
+    
+    -- List individual notes (limit to first 6 for space)
+    local max_notes_to_show = 6
+    for i, timing in ipairs(break_set.timing) do
+        if i > max_notes_to_show then
+            table.insert(info_lines, string.format("  ... +%d more", note_count - max_notes_to_show))
+            break
+        end
+        
+        local line = timing.relative_line or 1
+        local delay = timing.new_delay or 0
+        local note_val = timing.note_value or (36 + (timing.instrument_value or 0))
+        local inst_val = timing.source_instrument_index or timing.instrument_value or 0
+        local vol = timing.volume_value
+        local dist = timing.original_distance or 0
+        
+        -- Convert note value to note name
+        local octave = math.floor(note_val / 12)
+        local note_index = (note_val % 12) + 1
+        local note_name = note_names[note_index] .. octave
+        
+        -- Format: L01 C-4 I11 V-- d00 Dist:2048
+        local vol_str = (vol and vol ~= 255 and vol ~= 0xFF) and string.format("%02X", vol) or "--"
+        local inst_str = string.format("%02X", inst_val)
+        
+        table.insert(info_lines, string.format("L%02d %s I%s V%s d%02X", 
+            line, note_name, inst_str, vol_str, delay))
+    end
+    
+    -- ═══ STATISTICS SECTION ═══
+    table.insert(info_lines, "────────────")
+    table.insert(info_lines, "STATISTICS:")
+    
+    -- Count unique instruments
+    local inst_count = 0
+    local inst_list = {}
+    for inst_val, _ in pairs(unique_instruments) do
+        inst_count = inst_count + 1
+        table.insert(inst_list, string.format("I%02X", inst_val))
+    end
+    if inst_count > 0 then
+        local inst_str = table.concat(inst_list, ","):sub(1, 12)
+        table.insert(info_lines, string.format("Instruments: %d (%s)", inst_count, inst_str))
+    end
+    
+    -- Count unique notes
+    local note_type_count = 0
+    local note_list = {}
+    for note_val, _ in pairs(unique_notes) do
+        note_type_count = note_type_count + 1
+        local octave = math.floor(note_val / 12)
+        local note_index = (note_val % 12) + 1
+        table.insert(note_list, note_names[note_index] .. octave)
+    end
+    if note_type_count > 0 then
+        local note_str = table.concat(note_list, ","):sub(1, 10)
+        table.insert(info_lines, string.format("Unique Notes: %d (%s)", note_type_count, note_str))
+    end
+    
+    -- Average distance
+    if note_count > 0 then
+        local avg_distance = math.floor(total_distance / note_count)
+        table.insert(info_lines, string.format("Avg Distance: %d ticks", avg_distance))
+        
+        -- Approximate duration in lines
+        local duration_lines = math.floor(total_distance / 256)
+        table.insert(info_lines, string.format("Duration: ~%d lines", duration_lines))
+    end
+    
+    -- ═══ LABELS SECTION ═══
+    local has_labels = false
+    for _, _ in pairs(saved_labels) do
+        has_labels = true
+        break
+    end
+    
+    if has_labels then
+        table.insert(info_lines, "────────────")
+        table.insert(info_lines, "LABELS:")
+        
+        local label_count = 0
+        for slice_key, label_data in pairs(saved_labels) do
+            if label_count >= 4 then
+                table.insert(info_lines, "  ... more")
+                break
+            end
+            
+            local label_str = label_data.label or ""
+            local label2_str = label_data.label2 or ""
+            local bp_str = label_data.breakpoint and " (bp)" or ""
+            
+            if label_str ~= "" and label_str ~= "---------" then
+                local display = slice_key .. ": " .. label_str:sub(1, 8)
+                if label2_str ~= "" and label2_str ~= "---------" then
+                    display = display .. "/" .. label2_str:sub(1, 4)
+                end
+                display = display .. bp_str
+                table.insert(info_lines, "  " .. display)
+                label_count = label_count + 1
+            end
+        end
+    end
+    
+    -- ═══ TAGS & COLOR ═══
+    local current_tags = symbol_data.tags or {}
+    local current_color = symbol_data.color or ""
+    
+    if #current_tags > 0 or current_color ~= "" then
+        table.insert(info_lines, "────────────")
+        
+        if #current_tags > 0 then
+            local non_empty_tags = {}
+            for _, tag in ipairs(current_tags) do
+                if tag and tag ~= "" then
+                    table.insert(non_empty_tags, tag)
+                end
+            end
+            if #non_empty_tags > 0 then
+                table.insert(info_lines, "TAGS: " .. table.concat(non_empty_tags, ", "):sub(1, 16))
+            end
+        end
+        
+        if current_color ~= "" then
+            table.insert(info_lines, "COLOR: " .. current_color)
+        end
+    end
+    
+    return info_lines
+end
+
+-- Toggle detailed view and handle symbol expansion
+function toggle_detailed_view(vb)
+    detailed_view_enabled = not detailed_view_enabled
+    expanded_symbol = nil  -- Reset expanded symbol when toggling
+    
+    -- Update toggle button text
+    if vb.views.detailed_toggle then
+        vb.views.detailed_toggle.text = detailed_view_enabled and "?" or "i"
+    end
+    
+    -- Refresh dialog to rebuild with new view state
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    print("DEBUG: Detailed view toggled to " .. (detailed_view_enabled and "enabled" or "disabled"))
+end
+
+-- Expand a symbol to show detailed info (collapse others)
+function expand_symbol_detail(symbol, vb)
+    if expanded_symbol == symbol then
+        -- Clicking same symbol collapses it
+        expanded_symbol = nil
+    else
+        -- Expand this symbol, collapse others
+        expanded_symbol = symbol
+    end
+    
+    -- Update visibility of all detail containers
+    for _, s in ipairs(available_symbols) do
+        local detail_container = vb.views["detail_container_" .. s]
+        if detail_container then
+            detail_container.visible = (s == expanded_symbol)
+        end
+    end
+    
+    print("DEBUG: Expanded symbol: " .. (expanded_symbol or "none"))
 end
 
 function delete_symbol(symbol, vb)
@@ -717,7 +1041,7 @@ function update_tag_ui_state(symbol, tag_index, is_saved, tag_text, vb)
             tag_text_display.visible = true
             tag_text_display.text = tag_text
         end
-        tag_save_button.text = "[■]"
+        tag_save_button.text = "[*]"
         tag_save_button.tooltip = "Click to edit tag"
     else
         -- Editing state: show textfield, hide text display, update button
@@ -728,7 +1052,7 @@ function update_tag_ui_state(symbol, tag_index, is_saved, tag_text, vb)
         if tag_text_display then
             tag_text_display.visible = false
         end
-        tag_save_button.text = "[□]"
+        tag_save_button.text = "[ ]"
         tag_save_button.tooltip = "Click to save tag"
     end
 end
@@ -850,7 +1174,7 @@ function create_tag_input_row(symbol, tag_index, tag_text, is_saved, vb)
         -- Save/Edit button
         vb:button {
             id = "tag_save_" .. symbol .. "_" .. tag_index,
-            text = (is_saved and tag_text and tag_text ~= "") and "[■]" or "[□]",
+            text = (is_saved and tag_text and tag_text ~= "") and "[*]" or "[ ]",
             width = 20,
             height = 20,
             tooltip = (is_saved and tag_text and tag_text ~= "") and "Click to edit tag" or "Click to save tag",
@@ -1023,7 +1347,7 @@ function update_color_ui_state(symbol, is_saved, color_name, vb)
             -- Note: Text views don't support color property in Renoise
             -- Color indication is handled by the symbol buttons themselves
         end
-        color_save_button.text = "[■]"
+        color_save_button.text = "[*]"
         color_save_button.tooltip = "Click to edit color"
     else
         -- Editing state: show popup, hide text display, update button
@@ -1040,7 +1364,7 @@ function update_color_ui_state(symbol, is_saved, color_name, vb)
         if color_text_display then
             color_text_display.visible = false
         end
-        color_save_button.text = "[□]"
+        color_save_button.text = "[ ]"
         color_save_button.tooltip = "Click to save color"
     end
 end
@@ -1108,7 +1432,7 @@ function update_category_ui_state(symbol, is_saved, category_text, vb)
             category_text_display.visible = true
             category_text_display.text = category_text
         end
-        category_save_button.text = "[■]"
+        category_save_button.text = "[*]"
         category_save_button.tooltip = "Click to edit category"
     else
         -- Editing state: show textfield, hide text display, update button
@@ -1119,7 +1443,7 @@ function update_category_ui_state(symbol, is_saved, category_text, vb)
         if category_text_display then
             category_text_display.visible = false
         end
-        category_save_button.text = "[□]"
+        category_save_button.text = "[ ]"
         category_save_button.tooltip = "Click to save category"
     end
 end
@@ -1181,7 +1505,663 @@ function capture_selection_as_symbol()
     return false
 end
 
--- Load global symbol registry from preferences on startup
+-- Capture selection with labels - allows user to label notes before capturing
+function capture_selection_with_labels()
+    print("DEBUG: Capturing selection with labels")
+    
+    -- Validate selection first
+    local success, selection_data = selection.validate_selection()
+    if not success then
+        renoise.app():show_warning(selection_data)
+        return false
+    end
+    
+    -- Extract notes from selection
+    local notes, sel_data = selection.extract_notes_from_selection()
+    if not notes then
+        renoise.app():show_warning(sel_data or "Failed to extract notes from selection")
+        return false
+    end
+    
+    -- Collect unique (instrument_index, note_value) pairs
+    local unique_notes = {}
+    local unique_notes_list = {}
+    
+    for _, note in ipairs(notes) do
+        if note.has_note and note.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            local key = string.format("%03d_%03d", note.instrument_value, note.note_value)
+            if not unique_notes[key] then
+                unique_notes[key] = true
+                table.insert(unique_notes_list, {
+                    instrument_index = note.instrument_value + 1,  -- Convert to 1-based
+                    note_value = note.note_value,
+                    display_instrument = string.format("%02X", note.instrument_value),
+                    display_note = selection.note_value_to_string(note.note_value)
+                })
+            end
+        end
+    end
+    
+    if #unique_notes_list == 0 then
+        renoise.app():show_warning("No notes found in selection")
+        return false
+    end
+    
+    -- Sort by instrument, then note value
+    table.sort(unique_notes_list, function(a, b)
+        if a.instrument_index ~= b.instrument_index then
+            return a.instrument_index < b.instrument_index
+        end
+        return a.note_value < b.note_value
+    end)
+    
+    -- Look up existing labels for each note
+    for _, note_info in ipairs(unique_notes_list) do
+        local saved_labels = labeler.get_labels_for_instrument(note_info.instrument_index)
+        
+        -- Calculate the slice-based key (what labeler uses for sliced samples)
+        -- Slice 1 = note 37, key "01"; Slice 2 = note 38, key "02"
+        local slice_key = nil
+        if note_info.note_value >= 37 then
+            slice_key = string.format("%02X", note_info.note_value - 36)
+        end
+        
+        -- Also try note-based key (for keyzone mappings)
+        local note_key = string.format("%02X", note_info.note_value)
+        
+        -- Try slice key first (most common), then note key
+        local label_data = (slice_key and saved_labels[slice_key]) or saved_labels[note_key] or nil
+        
+        note_info.label = (label_data and label_data.label) or "---------"
+        note_info.label2 = (label_data and label_data.label2) or "---------"
+        note_info.has_existing_label = (label_data ~= nil)
+        
+        -- Store the key format that was found (for saving back)
+        note_info.storage_key = (slice_key and saved_labels[slice_key]) and slice_key or note_key
+    end
+    
+    -- Show dialog for labeling
+    show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
+end
+
+-- Dialog for capturing selection with labels
+function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
+    local capture_vb = renoise.ViewBuilder()
+    local capture_dialog = nil
+    
+    -- Get label options from labeler
+    local label_options = labeler.get_all_labels()
+    local show_label2 = get_show_label2()
+    
+    local column_width = 100
+    local narrow_column = 50
+    local spacing = 5
+    
+    -- Build the dialog content
+    local dialog_content = capture_vb:column {
+        margin = 10,
+        spacing = spacing,
+        
+        capture_vb:text {
+            text = "Capture Selection with Labels",
+            font = "bold",
+            style = "strong"
+        },
+        
+        capture_vb:text {
+            text = string.format("Found %d unique notes across selection", #unique_notes_list),
+            style = "disabled"
+        },
+        
+        capture_vb:space { height = 5 },
+        
+        -- Header row
+        capture_vb:row {
+            spacing = spacing,
+            capture_vb:text { text = "Inst", width = narrow_column, font = "bold", align = "center" },
+            capture_vb:text { text = "Note", width = narrow_column, font = "bold", align = "center" },
+            capture_vb:text { text = "Label", width = column_width, font = "bold", align = "center" },
+            show_label2 and capture_vb:text { text = "Label 2", width = column_width, font = "bold", align = "center" } or capture_vb:space { width = 1 },
+            capture_vb:text { text = "Status", width = 80, font = "bold", align = "center" }
+        }
+    }
+    
+    -- Add rows for each unique note
+    for i, note_info in ipairs(unique_notes_list) do
+        local status_text = note_info.has_existing_label and "(auto-filled)" or "(no label)"
+        local status_style = note_info.has_existing_label and "normal" or "disabled"
+        
+        local row = capture_vb:row {
+            spacing = spacing,
+            
+            -- Instrument
+            capture_vb:text {
+                text = note_info.display_instrument,
+                width = narrow_column,
+                align = "center"
+            },
+            
+            -- Note
+            capture_vb:text {
+                text = note_info.display_note,
+                width = narrow_column,
+                align = "center"
+            },
+            
+            -- Label dropdown
+            capture_vb:popup {
+                id = "label_" .. i,
+                items = label_options,
+                width = column_width,
+                value = table.find(label_options, note_info.label) or 1
+            },
+            
+            -- Label 2 dropdown (if enabled)
+            show_label2 and capture_vb:popup {
+                id = "label2_" .. i,
+                items = label_options,
+                width = column_width,
+                value = table.find(label_options, note_info.label2) or 1
+            } or capture_vb:space { width = 1 },
+            
+            -- Status
+            capture_vb:text {
+                text = status_text,
+                width = 80,
+                style = status_style
+            }
+        }
+        
+        dialog_content:add_child(row)
+    end
+    
+    -- Add buttons
+    dialog_content:add_child(capture_vb:space { height = 10 })
+    dialog_content:add_child(
+        capture_vb:row {
+            spacing = 10,
+            
+            capture_vb:button {
+                text = "Capture & Save Labels",
+                width = 140,
+                notifier = function()
+                    -- Collect labels from dialog
+                    local labels_to_save = {}
+                    for i, note_info in ipairs(unique_notes_list) do
+                        local label_popup = capture_vb.views["label_" .. i]
+                        local label2_popup = capture_vb.views["label2_" .. i]
+                        
+                        note_info.label = label_popup.items[label_popup.value]
+                        note_info.label2 = show_label2 and label2_popup and label2_popup.items[label2_popup.value] or "---------"
+                        
+                        -- Group by instrument for saving
+                        if not labels_to_save[note_info.instrument_index] then
+                            labels_to_save[note_info.instrument_index] = {}
+                        end
+                        
+                        -- Use slice-based key for sliced samples (note 37+ = slice keys)
+                        -- This matches what the labeler uses
+                        local save_key
+                        if note_info.note_value >= 37 then
+                            save_key = string.format("%02X", note_info.note_value - 36)  -- Slice key
+                        else
+                            save_key = string.format("%02X", note_info.note_value)  -- Note key
+                        end
+                        
+                        labels_to_save[note_info.instrument_index][save_key] = {
+                            label = note_info.label,
+                            label2 = note_info.label2,
+                            breakpoint = false,
+                            instrument_index = note_info.instrument_index,
+                            note_value = note_info.note_value
+                        }
+                    end
+                    
+                    -- Save labels to each instrument
+                    for inst_idx, inst_labels in pairs(labels_to_save) do
+                        -- Merge with existing labels
+                        local existing = labeler.get_labels_for_instrument(inst_idx)
+                        for key, label_data in pairs(inst_labels) do
+                            existing[key] = label_data
+                        end
+                        labeler.store_labels_for_instrument(inst_idx, existing)
+                    end
+                    
+                    -- Close dialog
+                    if capture_dialog and capture_dialog.visible then
+                        capture_dialog:close()
+                    end
+                    
+                    -- Now capture the symbol
+                    capture_selection_as_symbol()
+                end
+            },
+            
+            capture_vb:button {
+                text = "Capture Only",
+                width = 100,
+                notifier = function()
+                    -- Close dialog and capture without saving labels
+                    if capture_dialog and capture_dialog.visible then
+                        capture_dialog:close()
+                    end
+                    capture_selection_as_symbol()
+                end
+            },
+            
+            capture_vb:button {
+                text = "Cancel",
+                width = 80,
+                notifier = function()
+                    if capture_dialog and capture_dialog.visible then
+                        capture_dialog:close()
+                    end
+                end
+            }
+        }
+    )
+    
+    capture_dialog = renoise.app():show_custom_dialog("Capture with Labels", dialog_content)
+end
+
+-- ============================================================================
+-- Phase 2: Audio Preview Functions (API 6.2)
+-- ============================================================================
+
+-- Timer handle for sequential preview
+local preview_timer_active = false
+
+-- Stop any currently playing symbol preview
+function stop_symbol_preview()
+    -- Remove timer if active
+    if preview_timer_active then
+        if renoise.tool():has_timer(preview_timer_callback) then
+            renoise.tool():remove_timer(preview_timer_callback)
+        end
+        preview_timer_active = false
+    end
+    
+    if not preview_state.active then
+        return
+    end
+    
+    local song = renoise.song()
+    if not song then
+        preview_state.active = false
+        preview_state.notes = {}
+        preview_state.symbol = nil
+        return
+    end
+    
+    -- Stop all notes that were triggered
+    for _, note_info in ipairs(preview_state.notes) do
+        local inst_idx = note_info.instrument_index
+        local track_idx = preview_state.track_index or song.selected_track_index
+        local note_val = note_info.note_value
+        
+        -- Use API 6.2 trigger_instrument_note_off
+        pcall(function()
+            song:trigger_instrument_note_off(inst_idx, track_idx, note_val)
+        end)
+    end
+    
+    print("DEBUG: Stopped preview for symbol:", preview_state.symbol or "unknown")
+    
+    -- Reset preview state
+    preview_state.active = false
+    preview_state.instrument_index = nil
+    preview_state.track_index = nil
+    preview_state.notes = {}
+    preview_state.symbol = nil
+    preview_state.scheduled_notes = nil
+    preview_state.current_note_index = nil
+    preview_state.start_time = nil
+end
+
+-- Timer callback for sequential note playback
+function preview_timer_callback()
+    if not preview_state.active or not preview_state.scheduled_notes then
+        stop_symbol_preview()
+        return
+    end
+    
+    local song = renoise.song()
+    if not song then
+        stop_symbol_preview()
+        return
+    end
+    
+    local current_time = os.clock()
+    local elapsed = current_time - preview_state.start_time
+    local elapsed_ms = elapsed * 1000
+    
+    -- Check for notes that should be triggered
+    local notes_remaining = false
+    for i, note_info in ipairs(preview_state.scheduled_notes) do
+        if not note_info.triggered then
+            notes_remaining = true
+            if elapsed_ms >= note_info.trigger_time_ms then
+                -- Trigger this note
+                local inst_idx = note_info.instrument_index
+                local track_idx = preview_state.track_index
+                local note_val = note_info.note_value
+                local vol_normalized = note_info.volume_normalized
+                
+                pcall(function()
+                    song:trigger_instrument_note_on(inst_idx, track_idx, note_val, vol_normalized)
+                end)
+                
+                -- Add to active notes for cleanup
+                table.insert(preview_state.notes, {
+                    note_value = note_val,
+                    instrument_index = inst_idx
+                })
+                
+                note_info.triggered = true
+                print("DEBUG: Triggered note", note_val, "inst", inst_idx, "at", elapsed_ms, "ms")
+            end
+        end
+    end
+    
+    -- Check if all notes have been triggered
+    if not notes_remaining then
+        -- Keep timer running briefly to let last notes play, then stop
+        if not preview_state.finishing then
+            preview_state.finishing = true
+            preview_state.finish_time = current_time
+        elseif current_time - preview_state.finish_time > 0.5 then
+            -- 500ms after last note, stop preview
+            stop_symbol_preview()
+        end
+    end
+end
+
+-- Preview a symbol (plays notes in sequence with original timing)
+function preview_symbol(symbol_name)
+    -- Stop any existing preview first
+    stop_symbol_preview()
+    
+    local song = renoise.song()
+    if not song then
+        renoise.app():show_warning("No song loaded")
+        return false
+    end
+    
+    -- Check if symbol exists in registry
+    local symbol_data = global_symbol_registry[symbol_name]
+    if not symbol_data then
+        print("DEBUG: Symbol not found in registry:", symbol_name)
+        return false
+    end
+    
+    -- Get current BPM and LPB for timing calculations
+    local bpm = song.transport.bpm
+    local lpb = song.transport.lpb
+    
+    -- Calculate milliseconds per line
+    -- BPM = beats per minute, LPB = lines per beat
+    -- Lines per minute = BPM * LPB
+    -- Seconds per line = 60 / (BPM * LPB)
+    -- Milliseconds per line = 60000 / (BPM * LPB)
+    local ms_per_line = 60000 / (bpm * lpb)
+    
+    -- Delay value 256 = one full line, so ms_per_delay_unit = ms_per_line / 256
+    local ms_per_delay_unit = ms_per_line / 256
+    
+    print("DEBUG: BPM=" .. bpm .. " LPB=" .. lpb .. " ms_per_line=" .. ms_per_line)
+    
+    -- Collect notes with their timing information
+    local scheduled_notes = {}
+    
+    if symbol_data.break_set and symbol_data.break_set.timing then
+        for _, timing in ipairs(symbol_data.break_set.timing) do
+            -- Calculate trigger time for this timing entry
+            local relative_line = timing.relative_line or 1
+            local delay = timing.new_delay or 0
+            
+            -- Time in ms from start: (line - 1) * ms_per_line + delay * ms_per_delay_unit
+            local trigger_time_ms = ((relative_line - 1) * ms_per_line) + (delay * ms_per_delay_unit)
+            
+            -- Check if this timing entry has note_columns (multi-column data)
+            if timing.note_columns then
+                for col_idx, col_data in pairs(timing.note_columns) do
+                    if col_data.note_value and 
+                       col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE and
+                       col_data.note_value < 120 and
+                       col_data.instrument_value and
+                       col_data.instrument_value ~= 255 then
+                        local inst_idx = col_data.instrument_value + 1
+                        local volume = col_data.volume_value or 0x80
+                        local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
+                            and 0.5 or (volume / 127)
+                        
+                        table.insert(scheduled_notes, {
+                            note_value = col_data.note_value,
+                            instrument_index = inst_idx,
+                            volume_normalized = vol_normalized,
+                            trigger_time_ms = trigger_time_ms,
+                            triggered = false
+                        })
+                        print("DEBUG: Scheduled note", col_data.note_value, "inst", inst_idx, "at", trigger_time_ms, "ms")
+                    end
+                end
+            -- Fallback to single note_value if no note_columns
+            elseif timing.note_value and 
+                   timing.note_value ~= renoise.PatternLine.EMPTY_NOTE and
+                   timing.note_value < 120 and
+                   timing.instrument_value and
+                   timing.instrument_value ~= 255 then
+                local inst_idx = timing.instrument_value + 1
+                local volume = timing.volume_value or 0x80
+                local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
+                    and 0.5 or (volume / 127)
+                
+                table.insert(scheduled_notes, {
+                    note_value = timing.note_value,
+                    instrument_index = inst_idx,
+                    volume_normalized = vol_normalized,
+                    trigger_time_ms = trigger_time_ms,
+                    triggered = false
+                })
+                print("DEBUG: Scheduled note (fallback)", timing.note_value, "inst", inst_idx, "at", trigger_time_ms, "ms")
+            end
+        end
+    end
+    
+    if #scheduled_notes == 0 then
+        print("DEBUG: No valid notes to preview for symbol:", symbol_name)
+        return false
+    end
+    
+    -- Sort by trigger time
+    table.sort(scheduled_notes, function(a, b)
+        return a.trigger_time_ms < b.trigger_time_ms
+    end)
+    
+    -- Add a short delay before the first note (150ms) to allow UI to settle
+    local initial_delay_ms = 150
+    for _, note in ipairs(scheduled_notes) do
+        note.trigger_time_ms = note.trigger_time_ms + initial_delay_ms
+    end
+    
+    -- Set up preview state
+    preview_state.active = true
+    preview_state.track_index = song.selected_track_index
+    preview_state.symbol = symbol_name
+    preview_state.notes = {}  -- Will be filled as notes are triggered
+    preview_state.scheduled_notes = scheduled_notes
+    preview_state.start_time = os.clock()
+    preview_state.finishing = false
+    
+    -- Start timer (10ms interval for responsive timing)
+    if not renoise.tool():has_timer(preview_timer_callback) then
+        renoise.tool():add_timer(preview_timer_callback, 10)
+        preview_timer_active = true
+    end
+    
+    print("DEBUG: Started sequential preview for symbol:", symbol_name, "with", #scheduled_notes, "notes")
+    return true
+end
+
+-- Preview a specific sample directly (helper function)
+function preview_sample_direct(instrument_index, sample_index, note_value, volume)
+    local song = renoise.song()
+    if not song then return false end
+    
+    -- Stop any existing preview
+    stop_symbol_preview()
+    
+    local track_idx = song.selected_track_index
+    local vol_normalized = volume and (volume / 127) or 0.5
+    
+    -- Set up preview state for single note
+    preview_state.active = true
+    preview_state.track_index = track_idx
+    preview_state.symbol = nil
+    preview_state.notes = {{
+        note_value = note_value,
+        instrument_index = instrument_index,
+        sample_index = sample_index
+    }}
+    
+    -- Use trigger_sample_note_on for direct sample playback
+    local success = pcall(function()
+        song:trigger_sample_note_on(instrument_index, sample_index, track_idx, note_value, vol_normalized, false)
+    end)
+    
+    return success
+end
+
+-- ============================================================================
+-- Phase 2: Selection-Based Breakpoint Creation
+-- ============================================================================
+
+-- Add breakpoints from current pattern selection
+function add_breakpoints_from_selection()
+    print("DEBUG: Adding breakpoints from selection")
+    
+    local song = renoise.song()
+    if not song then
+        renoise.app():show_warning("No song loaded")
+        return false
+    end
+    
+    -- Check for valid selection
+    local sel = song.selection_in_pattern
+    if not sel then
+        renoise.app():show_warning("No selection in pattern. Please select some notes first.")
+        return false
+    end
+    
+    local pattern_index = song.selected_pattern_index
+    local pattern = song.patterns[pattern_index]
+    if not pattern then
+        renoise.app():show_warning("Could not access current pattern")
+        return false
+    end
+    
+    -- Collect unique (instrument_index, note_value) pairs from selection
+    local unique_notes = {}
+    local notes_found = 0
+    
+    for track_idx = sel.start_track, sel.end_track do
+        local track = pattern:track(track_idx)
+        if track then
+            for line_idx = sel.start_line, sel.end_line do
+                local line = track:line(line_idx)
+                if line then
+                    -- Determine column range for this track
+                    local start_col = (track_idx == sel.start_track) and sel.start_column or 1
+                    local end_col = (track_idx == sel.end_track) and sel.end_column or #line.note_columns
+                    
+                    -- Clamp to valid note column range
+                    end_col = math.min(end_col, #line.note_columns)
+                    
+                    for col_idx = start_col, end_col do
+                        local note_col = line:note_column(col_idx)
+                        if note_col and note_col.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                            local inst_idx = note_col.instrument_value
+                            local note_val = note_col.note_value
+                            
+                            -- Skip OFF notes (120) and invalid instruments
+                            if note_val < 120 and inst_idx ~= 255 then
+                                local key = string.format("%03d_%03d", inst_idx, note_val)
+                                if not unique_notes[key] then
+                                    unique_notes[key] = {
+                                        instrument_index = inst_idx + 1,  -- Convert to 1-based
+                                        note_value = note_val
+                                    }
+                                    notes_found = notes_found + 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    if notes_found == 0 then
+        renoise.app():show_warning("No valid notes found in selection")
+        return false
+    end
+    
+    -- Mark each unique note as a breakpoint in labeler data
+    local breakpoints_added = 0
+    
+    for _, note_info in pairs(unique_notes) do
+        local inst_idx = note_info.instrument_index
+        local note_val = note_info.note_value
+        
+        -- Calculate the hex key (same format as labeler uses)
+        -- For sliced instruments: slice 1 = note 37 (C#1), key "01"
+        -- For non-sliced: use note value directly
+        local hex_key
+        if note_val >= 37 then
+            -- Slice-based key (note 37 = slice 1 = "01")
+            hex_key = string.format("%02X", note_val - 36)
+        else
+            -- Root sample or non-sliced
+            hex_key = string.format("%02X", note_val)
+        end
+        
+        -- Get or create label data for this instrument/note
+        local saved_labels = labeler.get_labels_for_instrument(inst_idx)
+        
+        if not saved_labels[hex_key] then
+            -- Create new label entry
+            saved_labels[hex_key] = {
+                label = "---------",
+                label2 = "---------",
+                breakpoint = true,
+                instrument_index = inst_idx,
+                note_value = note_val
+            }
+        else
+            -- Update existing entry to mark as breakpoint
+            saved_labels[hex_key].breakpoint = true
+        end
+        
+        -- Save back to labeler
+        labeler.set_labels_for_instrument(inst_idx, saved_labels)
+        breakpoints_added = breakpoints_added + 1
+        
+        print("DEBUG: Added breakpoint for instrument", inst_idx, "note", note_val, "key", hex_key)
+    end
+    
+    -- Trigger refresh to regenerate symbols
+    if dialog and dialog.visible then
+        -- Preserve tag inputs before refresh
+        if current_dialog_vb then
+            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
+        end
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    renoise.app():show_status(string.format("Added %d breakpoint(s) from selection", breakpoints_added))
+    return true, breakpoints_added
+end
 function load_global_symbol_registry()
     if preferences.global_symbol_registry_data and preferences.global_symbol_registry_data.value ~= "" then
         -- Deserialize the registry from string format
@@ -1344,7 +2324,7 @@ function export_global_alphabet_csv()
                         end
                     end
                 else
-                    -- No effect columns data, add 16 empty fields (8 columns × 2 values each)
+                    -- No effect columns data, add 16 empty fields (8 columns x 2 values each)
                     for fx_col = 1, 16 do
                         table.insert(effect_columns_data, "")
                     end
@@ -1370,7 +2350,7 @@ function export_global_alphabet_csv()
                         end
                     end
                 else
-                    -- No note columns data, add 84 empty fields (12 columns × 7 values each)
+                    -- No note columns data, add 84 empty fields (12 columns x 7 values each)
                     for note_col = 1, 84 do
                         table.insert(note_columns_data, "")
                     end
@@ -2455,6 +3435,7 @@ local function create_compact_overflow_section(vb)
                         vb.views.compact_overflow_next_pattern.value = false
                         vb.views.compact_overflow_truncate.value = false
                         vb.views.compact_overflow_loop.value = false
+                        vb.views.compact_overflow_insert.value = false
                     end
                 end
             },
@@ -2472,6 +3453,7 @@ local function create_compact_overflow_section(vb)
                         vb.views.compact_overflow_extend.value = false
                         vb.views.compact_overflow_truncate.value = false
                         vb.views.compact_overflow_loop.value = false
+                        vb.views.compact_overflow_insert.value = false
                     end
                 end
             },
@@ -2489,6 +3471,7 @@ local function create_compact_overflow_section(vb)
                         vb.views.compact_overflow_extend.value = false
                         vb.views.compact_overflow_next_pattern.value = false
                         vb.views.compact_overflow_loop.value = false
+                        vb.views.compact_overflow_insert.value = false
                     end
                 end
             },
@@ -2506,10 +3489,29 @@ local function create_compact_overflow_section(vb)
                         vb.views.compact_overflow_extend.value = false
                         vb.views.compact_overflow_next_pattern.value = false
                         vb.views.compact_overflow_truncate.value = false
+                        vb.views.compact_overflow_insert.value = false
                     end
                 end
             },
             vb:text { text = "L", width = 15 }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_overflow_insert",
+                value = (current_overflow_behavior == overflow_behavior.INSERT),
+                notifier = function(value)
+                    if value then
+                        current_overflow_behavior = overflow_behavior.INSERT
+                        -- Uncheck other options
+                        vb.views.compact_overflow_extend.value = false
+                        vb.views.compact_overflow_next_pattern.value = false
+                        vb.views.compact_overflow_truncate.value = false
+                        vb.views.compact_overflow_loop.value = false
+                    end
+                end
+            },
+            vb:text { text = "I", width = 15 }
         }
     }
 end
@@ -3110,6 +4112,22 @@ local function register_keybinding_entries()
             capture_selection_as_symbol()
         end
     }
+    
+    -- Phase 2: Stop preview keybinding
+    renoise.tool():add_keybinding {
+        name = "Global:Tools:BreakFast Stop Preview",
+        invoke = function()
+            stop_symbol_preview()
+        end
+    }
+    
+    -- Phase 2: Add breakpoints from selection keybinding
+    renoise.tool():add_keybinding {
+        name = "Pattern Editor:Selection:BreakFast Add Breakpoints from Selection",
+        invoke = function()
+            add_breakpoints_from_selection()
+        end
+    }
 end
 
 
@@ -3236,6 +4254,7 @@ local function create_symbol_editor_dialog()
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_truncate.value = false
                                             vb.views.overflow_loop.value = false
+                                            vb.views.overflow_insert.value = false
                                         end
                                     end
                                 },
@@ -3255,6 +4274,7 @@ local function create_symbol_editor_dialog()
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_truncate.value = false
                                             vb.views.overflow_loop.value = false
+                                            vb.views.overflow_insert.value = false
                                         end
                                     end
                                 },
@@ -3274,6 +4294,7 @@ local function create_symbol_editor_dialog()
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_loop.value = false
+                                            vb.views.overflow_insert.value = false
                                         end
                                     end
                                 },
@@ -3293,11 +4314,32 @@ local function create_symbol_editor_dialog()
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_truncate.value = false
+                                            vb.views.overflow_insert.value = false
                                         end
                                     end
                                 },
                                 vb:text {
                                     text = "Loop",
+                                    width = 120
+                                }
+                            },
+                            vb:row {
+                                spacing = 10,
+                                vb:checkbox {
+                                    id = "overflow_insert",
+                                    value = (current_overflow_behavior == overflow_behavior.INSERT),
+                                    notifier = function(value)
+                                        if value then
+                                            current_overflow_behavior = overflow_behavior.INSERT
+                                            vb.views.overflow_extend.value = false
+                                            vb.views.overflow_next_pattern.value = false
+                                            vb.views.overflow_truncate.value = false
+                                            vb.views.overflow_loop.value = false
+                                        end
+                                    end
+                                },
+                                vb:text {
+                                    text = "Insert Pattern",
                                     width = 120
                                 }
                             }
@@ -3639,12 +4681,12 @@ local function create_symbol_editor_dialog()
                 width = 500,
 
                 
-                -- Right column header with collapse, category toggle, and organize toggle buttons
+                -- Right column header with collapse, category toggle, organize toggle, and detailed toggle buttons
                 vb:row {
                     spacing = 5,
                     vb:button {
                         id = "category_toggle",
-                        text = category_view_enabled and "…" or "≡",
+                        text = category_view_enabled and "..." or "=",
                         width = 25,
                         height = 25,
                         tooltip = "Toggle tag view",
@@ -3654,12 +4696,22 @@ local function create_symbol_editor_dialog()
                     },
                     vb:button {
                         id = "organize_toggle",
-                        text = organize_view_enabled and "▬" or "§",
+                        text = organize_view_enabled and "#" or "$",
                         width = 25,
                         height = 25,
                         tooltip = "Toggle organize view",
                         notifier = function()
                             toggle_organize_view(vb)
+                        end
+                    },
+                    vb:button {
+                        id = "detailed_toggle",
+                        text = detailed_view_enabled and "?" or "i",
+                        width = 25,
+                        height = 25,
+                        tooltip = "Toggle detailed view (click symbols to expand)",
+                        notifier = function()
+                            toggle_detailed_view(vb)
                         end
                     },
                     vb:horizontal_aligner {
@@ -3717,7 +4769,7 @@ local function create_symbol_editor_dialog()
                         spacing = 10,
                         vb:button {
                             id = "prev_page_btn",
-                            text = "◄ Previous",
+                            text = "<< Prev",
                             width = 80,
                             active = (function()
                                 local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -3741,7 +4793,7 @@ local function create_symbol_editor_dialog()
                         },
                         vb:button {
                             id = "next_page_btn",
-                            text = "Next ►",
+                            text = "Next >>",
                             width = 80,
                             active = (function()
                                 local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
@@ -3787,7 +4839,7 @@ local function create_symbol_editor_dialog()
                                         style = "panel"
                                     }
 
-                                    print("DEBUG: Creating symbol column for " .. symbol .. ", category_view_enabled=" .. tostring(category_view_enabled))
+                                    print("DEBUG: Creating symbol column for " .. symbol .. ", category_view_enabled=" .. tostring(category_view_enabled) .. ", detailed_view_enabled=" .. tostring(detailed_view_enabled))
                                     
                                     
                                     -- Add placement button if symbol exists, otherwise show disabled text
@@ -3797,7 +4849,36 @@ local function create_symbol_editor_dialog()
                                             width = 35,
                                             height = 25,
                                             notifier = function()
-                                                editor.place_symbol(symbol)
+                                                if detailed_view_enabled then
+                                                    -- In detailed mode, clicking expands/collapses detail
+                                                    expand_symbol_detail(symbol, vb)
+                                                else
+                                                    -- Normal mode, place symbol
+                                                    editor.place_symbol(symbol)
+                                                end
+                                            end
+                                        }
+                                        
+                                        -- Phase 2: Preview button
+                                        local preview_button = vb:button {
+                                            text = ">",
+                                            width = 20,
+                                            height = 25,
+                                            tooltip = "Preview symbol " .. symbol,
+                                            notifier = function()
+                                                preview_symbol(symbol)
+                                            end
+                                        }
+                                        
+                                        -- Detailed view: Expand button (only in detailed mode)
+                                        local expand_button = vb:button {
+                                            text = (expanded_symbol == symbol) and "-" or "+",
+                                            width = 20,
+                                            height = 25,
+                                            tooltip = "Expand/collapse details for " .. symbol,
+                                            visible = detailed_view_enabled,
+                                            notifier = function()
+                                                expand_symbol_detail(symbol, vb)
                                             end
                                         }
                                         
@@ -3813,7 +4894,12 @@ local function create_symbol_editor_dialog()
                                         symbol_col:add_child(
                                             vb:horizontal_aligner {
                                                 mode = "center",
-                                                grid_symbol_button
+                                                vb:row {
+                                                    spacing = 2,
+                                                    grid_symbol_button,
+                                                    preview_button,
+                                                    expand_button
+                                                }
                                             }
                                         )
                                     else
@@ -3852,6 +4938,38 @@ local function create_symbol_editor_dialog()
                                                 align = "center"
                                             }
                                         )
+                                    end
+                                    
+                                    -- Detailed view: Expandable detail container
+                                    if detailed_view_enabled then
+                                        local is_expanded = (expanded_symbol == symbol)
+                                        local detail_info = format_detailed_symbol_info(symbol)
+                                        
+                                        local detail_container = vb:column {
+                                            id = "detail_container_" .. symbol,
+                                            visible = is_expanded,
+                                            style = "border",
+                                            margin = 2,
+                                            width = 112
+                                        }
+                                        
+                                        -- Add separator
+                                        detail_container:add_child(vb:space { height = 3 })
+                                        
+                                        -- Add each line of detail info
+                                        for _, info_line in ipairs(detail_info) do
+                                            detail_container:add_child(
+                                                vb:text {
+                                                    text = info_line,
+                                                    font = "mono",
+                                                    align = "left"
+                                                }
+                                            )
+                                        end
+                                        
+                                        detail_container:add_child(vb:space { height = 3 })
+                                        
+                                        symbol_col:add_child(detail_container)
                                     end
                                     
 -- Add tag display below note info (when not in tag editing mode)
@@ -3982,7 +5100,7 @@ local function create_symbol_editor_dialog()
                                             -- Save/Edit button
                                             vb:button {
                                                 id = "color_save_" .. symbol,
-                                                text = (color_is_saved and current_color and current_color ~= "") and "[■]" or "[□]",
+                                                text = (color_is_saved and current_color and current_color ~= "") and "[*]" or "[ ]",
                                                 width = 20,
                                                 height = 20,
                                                 tooltip = (color_is_saved and current_color and current_color ~= "") and "Click to edit color" or "Click to save color",
@@ -4056,7 +5174,7 @@ local function create_symbol_editor_dialog()
                                             -- Lock/execute move button
                                             vb:button {
                                                 id = "move_lock_" .. symbol,
-                                                text = "→",
+                                                text = "->",
                                                 width = 25,
                                                 height = 20,
                                                 tooltip = "Move symbol " .. symbol .. " to selected position",
@@ -4472,7 +5590,15 @@ end
 
 -- Set up labeler callback to refresh main dialog and provide global symbol functions
 labeler.set_refresh_callback(safe_labeler_refresh)
-labeler.set_global_symbol_functions(get_global_symbol_registry, assign_symbols_to_instrument, save_global_symbol_registry)
+labeler.set_global_symbol_functions(
+    get_global_symbol_registry, 
+    assign_symbols_to_instrument, 
+    save_global_symbol_registry,
+    get_custom_labels_data,
+    save_custom_labels_data,
+    get_show_label2,
+    save_show_label2
+)
 
 -- Set up selection module functions
 selection.set_global_symbol_functions(get_global_symbol_registry, find_next_available_symbols, save_global_symbol_registry)
@@ -4521,11 +5647,30 @@ renoise.tool():add_menu_entry {
     end
 }
 
+-- Pattern Editor context menu entry for capturing selection with labels
+renoise.tool():add_menu_entry {
+    name = "Pattern Editor:Capture Selection with Labels",
+    invoke = function()
+        capture_selection_with_labels()
+    end
+}
+
+-- Phase 2: Pattern Editor context menu entry for adding breakpoints from selection
+renoise.tool():add_menu_entry {
+    name = "Pattern Editor:BreakFast:Add Breakpoints from Selection",
+    invoke = function()
+        add_breakpoints_from_selection()
+    end
+}
+
 -- Initialize keybinding system (safe at startup)
 register_keybinding_entries()
 
 -- Cleanup on tool unload
 function cleanup()
+    -- Stop any active preview
+    stop_symbol_preview()
+    
     -- Save global symbol registry before cleanup
     save_global_symbol_registry()
     

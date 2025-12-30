@@ -2,8 +2,8 @@
 <RenoiseScriptingTool doc_version="0">
   <Name>BreakFast</Name>
   <Id>up.startscreem.breakfast</Id>
-  <Version>0.1</Version>
-  <ApiVersion>6.1</ApiVersion>
+  <Version>0.2</Version>
+  <ApiVersion>6.2</ApiVersion>
   <Author>StartScreem</Author>
   <Description>BreakFast is a Renoise Tool that enables users to type out breaks while preserving groove with a keybinding and break storage.</Description>
   <Category>Pattern Editor</Category>

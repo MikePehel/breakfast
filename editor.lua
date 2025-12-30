@@ -472,6 +472,76 @@ function editor.place_symbol(symbol_name)
                 
                 print("DEBUG: Moved to next pattern, adjusted notes with cursor offset consideration")
             end
+        elseif current_behavior == behavior_constants.INSERT then
+            -- INSERT: Always insert a new pattern after current, regardless of existing patterns
+            -- Check if ANY note in this symbol would exceed current pattern length
+            local max_note_line = 0
+            for _, note in ipairs(placement_info.notes) do
+                max_note_line = math.max(max_note_line, note.line)
+            end
+            
+            if max_note_line > song.selected_pattern.number_of_lines then
+                local current_sequence_pos = song.selected_sequence_index
+                local next_sequence_pos = current_sequence_pos + 1
+                local current_pattern_length = song.selected_pattern.number_of_lines
+                
+                -- Always insert a new pattern (key difference from NEXT_PATTERN)
+                local new_pattern_index = song.sequencer:insert_new_pattern_at(next_sequence_pos)
+                print("DEBUG: INSERT behavior - Created new pattern " .. new_pattern_index .. " at sequence position " .. next_sequence_pos)
+                
+                -- Set new pattern length to match current pattern
+                local new_pattern = song.patterns[new_pattern_index]
+                if new_pattern then
+                    new_pattern.number_of_lines = current_pattern_length
+                    print("DEBUG: INSERT behavior - Set new pattern length to " .. current_pattern_length)
+                end
+                
+                -- Store original positions before pattern transition for Intersect behavior
+                placement_info.original_next_line_before_transition = placement_info.next_line
+                placement_info.original_start_line_before_transition = placement_info.original_start_line
+                
+                -- Move to newly inserted pattern
+                song.selected_sequence_index = next_sequence_pos
+                
+                -- Adjust all note positions to wrap to new pattern
+                for _, note in ipairs(placement_info.notes) do
+                    -- Calculate how far this note extends beyond the current pattern
+                    local overhang = note.line - current_pattern_length
+                    -- Place it at the beginning of next pattern plus the overhang
+                    note.line = overhang
+                end
+                
+                -- Adjust next_line calculation for proper chaining
+                local next_line_overhang = placement_info.next_line - current_pattern_length
+                placement_info.next_line = next_line_overhang
+                
+                -- Adjust original_start_line for new pattern context
+                if placement_info.original_start_line then
+                    local start_line_overhang = placement_info.original_start_line - current_pattern_length
+                    placement_info.original_start_line = start_line_overhang
+                    print("DEBUG: INSERT behavior - Adjusted original_start_line from " .. placement_info.original_start_line_before_transition .. " to " .. placement_info.original_start_line .. " for new pattern")
+                end
+                
+                -- Adjust last_timing to maintain stitching chain
+                if placement_info.last_timing then
+                    local timing_overhang = placement_info.last_timing.relative_line - current_pattern_length
+                    placement_info.last_timing.relative_line = timing_overhang
+                end
+                
+                -- Adjust last_note_distance for pattern extension calculations
+                if placement_info.last_note_distance then
+                    local distance_overhang = placement_info.last_note_distance.line - current_pattern_length
+                    placement_info.last_note_distance.line = distance_overhang
+                end
+                
+                -- Mark that pattern transition occurred for Intersect behavior
+                placement_info.pattern_transition_occurred = true
+                
+                -- Update placement state to reflect new pattern position
+                placement_state.next_placement_line = placement_info.next_line
+                
+                print("DEBUG: INSERT behavior - Moved to inserted pattern, adjusted notes")
+            end
         end
     end
     
