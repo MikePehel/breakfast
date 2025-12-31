@@ -133,6 +133,7 @@ local preferences = renoise.Document.create("BreakFastPreferences") {
     global_symbol_registry_data = "",
     custom_labels_data = "",      -- User-defined custom labels (JSON array)
     show_label2 = false,          -- Toggle state for Label 2 column visibility
+    show_advanced_data = false,   -- Toggle state for Advanced Data columns visibility
     symbol_dictionaries_data = "" -- Phase 4: Dictionary persistence
 }
 
@@ -160,6 +161,19 @@ end
 function save_show_label2(value)
     if preferences.show_label2 then
         preferences.show_label2.value = value
+    end
+end
+
+function get_show_advanced_data()
+    if preferences.show_advanced_data then
+        return preferences.show_advanced_data.value
+    end
+    return false
+end
+
+function save_show_advanced_data(value)
+    if preferences.show_advanced_data then
+        preferences.show_advanced_data.value = value
     end
 end
 
@@ -979,13 +993,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€šÃ‚Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -2084,6 +2098,12 @@ function capture_selection_with_labels()
         note_info.label2 = (label_data and label_data.label2) or "---------"
         note_info.has_existing_label = (label_data ~= nil)
         
+        -- Advanced data fields
+        note_info.location = (label_data and label_data.location) or "Off-Center"
+        note_info.ghost = (label_data and label_data.ghost) or false
+        note_info.counterstroke = (label_data and label_data.counterstroke) or false
+        note_info.cycle = (label_data and label_data.cycle) or false
+        
         -- Store the key format that was found (for saving back)
         note_info.storage_key = (slice_key and saved_labels[slice_key]) and slice_key or note_key
     end
@@ -2100,11 +2120,83 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
     -- Get label options from labeler
     local label_options = labeler.get_all_labels()
     local show_label2 = get_show_label2()
+    local show_advanced_data = get_show_advanced_data()
     
     local column_width = 100
     local narrow_column = 50
     local spacing = 5
     local preview_column_width = 22  -- Phase 6: Preview column
+    local location_column_width = 80
+    local checkbox_column_width = 50
+    
+    -- Function to rebuild the dialog when toggles change
+    local function rebuild_dialog()
+        labeler.stop_slice_preview()
+        if capture_dialog and capture_dialog.visible then
+            capture_dialog:close()
+        end
+        show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
+    end
+    
+    -- Build header elements dynamically
+    local header_elements = {
+        capture_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
+        capture_vb:text { text = "Inst", width = narrow_column, font = "bold", align = "center" },
+        capture_vb:text { text = "Note", width = narrow_column, font = "bold", align = "center" },
+        capture_vb:text { text = "Label", width = column_width, font = "bold", align = "center" }
+    }
+    
+    -- Add Label 2 toggle and column
+    if show_label2 then
+        table.insert(header_elements, capture_vb:button {
+            text = "[-]",
+            width = 25,
+            tooltip = "Hide Label 2 column",
+            notifier = function()
+                save_show_label2(false)
+                rebuild_dialog()
+            end
+        })
+        table.insert(header_elements, capture_vb:text { text = "Label 2", width = column_width, font = "bold", align = "center" })
+    else
+        table.insert(header_elements, capture_vb:button {
+            text = "[+]",
+            width = 25,
+            tooltip = "Show Label 2 column",
+            notifier = function()
+                save_show_label2(true)
+                rebuild_dialog()
+            end
+        })
+    end
+    
+    -- Add Status column
+    table.insert(header_elements, capture_vb:text { text = "Status", width = 80, font = "bold", align = "center" })
+    
+    -- Add Advanced Data toggle
+    table.insert(header_elements, capture_vb:button {
+        text = show_advanced_data and "Adv [-]" or "Adv [+]",
+        width = 50,
+        tooltip = show_advanced_data and "Hide Advanced Data columns" or "Show Advanced Data columns",
+        notifier = function()
+            save_show_advanced_data(not show_advanced_data)
+            rebuild_dialog()
+        end
+    })
+    
+    -- Add Advanced Data columns if enabled
+    if show_advanced_data then
+        table.insert(header_elements, capture_vb:text { text = "Location", width = location_column_width, font = "bold", align = "center" })
+        table.insert(header_elements, capture_vb:text { text = "Ghost", width = checkbox_column_width, font = "bold", align = "center" })
+        table.insert(header_elements, capture_vb:text { text = "CStroke", width = checkbox_column_width, font = "bold", align = "center" })
+        table.insert(header_elements, capture_vb:text { text = "Cycle", width = checkbox_column_width, font = "bold", align = "center" })
+    end
+    
+    -- Build header row
+    local header_row = capture_vb:row { spacing = spacing }
+    for _, element in ipairs(header_elements) do
+        header_row:add_child(element)
+    end
     
     -- Build the dialog content
     local dialog_content = capture_vb:column {
@@ -2124,16 +2216,8 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
         
         capture_vb:space { height = 5 },
         
-        -- Header row (Phase 6: Added preview column)
-        capture_vb:row {
-            spacing = spacing,
-            capture_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
-            capture_vb:text { text = "Inst", width = narrow_column, font = "bold", align = "center" },
-            capture_vb:text { text = "Note", width = narrow_column, font = "bold", align = "center" },
-            capture_vb:text { text = "Label", width = column_width, font = "bold", align = "center" },
-            show_label2 and capture_vb:text { text = "Label 2", width = column_width, font = "bold", align = "center" } or capture_vb:space { width = 1 },
-            capture_vb:text { text = "Status", width = 80, font = "bold", align = "center" }
-        }
+        -- Header row
+        header_row
     }
     
     -- Add rows for each unique note
@@ -2144,13 +2228,11 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
         -- Phase 6: Create preview button ID
         local preview_button_id = "capture_preview_" .. i
         
-        local row = capture_vb:row {
-            spacing = spacing,
-            
+        local row_elements = {
             -- Phase 6: Preview button
             capture_vb:button {
                 id = preview_button_id,
-                text = "â–¸",
+                text = "▸",
                 width = preview_column_width,
                 tooltip = "Preview this note",
                 notifier = function()
@@ -2183,23 +2265,78 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                 items = label_options,
                 width = column_width,
                 value = table.find(label_options, note_info.label) or 1
-            },
-            
-            -- Label 2 dropdown (if enabled)
-            show_label2 and capture_vb:popup {
+            }
+        }
+        
+        -- Spacer for Label 2 toggle button
+        table.insert(row_elements, capture_vb:space { width = 25 })
+        
+        -- Label 2 dropdown (if enabled)
+        if show_label2 then
+            table.insert(row_elements, capture_vb:popup {
                 id = "label2_" .. i,
                 items = label_options,
                 width = column_width,
                 value = table.find(label_options, note_info.label2) or 1
-            } or capture_vb:space { width = 1 },
+            })
+        end
+        
+        -- Status
+        table.insert(row_elements, capture_vb:text {
+            text = status_text,
+            width = 80,
+            style = status_style
+        })
+        
+        -- Spacer for Advanced Data toggle button
+        table.insert(row_elements, capture_vb:space { width = 50 })
+        
+        -- Advanced Data fields (when enabled)
+        if show_advanced_data then
+            -- Location dropdown
+            table.insert(row_elements, capture_vb:popup {
+                id = "location_" .. i,
+                items = labeler.location_options,
+                width = location_column_width,
+                value = table.find(labeler.location_options, note_info.location) or 1
+            })
             
-            -- Status
-            capture_vb:text {
-                text = status_text,
-                width = 80,
-                style = status_style
-            }
-        }
+            -- Ghost checkbox
+            table.insert(row_elements, capture_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                capture_vb:checkbox {
+                    id = "ghost_" .. i,
+                    value = note_info.ghost
+                }
+            })
+            
+            -- Counterstroke checkbox
+            table.insert(row_elements, capture_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                capture_vb:checkbox {
+                    id = "counterstroke_" .. i,
+                    value = note_info.counterstroke
+                }
+            })
+            
+            -- Cycle checkbox
+            table.insert(row_elements, capture_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                capture_vb:checkbox {
+                    id = "cycle_" .. i,
+                    value = note_info.cycle
+                }
+            })
+        end
+        
+        -- Build row from elements
+        local row = capture_vb:row { spacing = spacing }
+        for _, element in ipairs(row_elements) do
+            row:add_child(element)
+        end
         
         dialog_content:add_child(row)
     end
@@ -2219,12 +2356,40 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                     
                     -- Collect labels from dialog
                     local labels_to_save = {}
+                    local current_show_advanced_data = get_show_advanced_data()
+                    
                     for i, note_info in ipairs(unique_notes_list) do
                         local label_popup = capture_vb.views["label_" .. i]
                         local label2_popup = capture_vb.views["label2_" .. i]
                         
                         note_info.label = label_popup.items[label_popup.value]
                         note_info.label2 = show_label2 and label2_popup and label2_popup.items[label2_popup.value] or "---------"
+                        
+                        -- Collect advanced data values
+                        local location_value = note_info.location or "Off-Center"
+                        local ghost_value = note_info.ghost or false
+                        local counterstroke_value = note_info.counterstroke or false
+                        local cycle_value = note_info.cycle or false
+                        
+                        if current_show_advanced_data then
+                            local location_popup = capture_vb.views["location_" .. i]
+                            local ghost_field = capture_vb.views["ghost_" .. i]
+                            local counterstroke_field = capture_vb.views["counterstroke_" .. i]
+                            local cycle_field = capture_vb.views["cycle_" .. i]
+                            
+                            if location_popup then
+                                location_value = labeler.location_options[location_popup.value]
+                            end
+                            if ghost_field then
+                                ghost_value = ghost_field.value
+                            end
+                            if counterstroke_field then
+                                counterstroke_value = counterstroke_field.value
+                            end
+                            if cycle_field then
+                                cycle_value = cycle_field.value
+                            end
+                        end
                         
                         -- Group by instrument for saving
                         if not labels_to_save[note_info.instrument_index] then
@@ -2245,7 +2410,11 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
                             label2 = note_info.label2,
                             breakpoint = false,
                             instrument_index = note_info.instrument_index,
-                            note_value = note_info.note_value
+                            note_value = note_info.note_value,
+                            location = location_value,
+                            ghost = ghost_value,
+                            counterstroke = counterstroke_value,
+                            cycle = cycle_value
                         }
                     end
                     
@@ -6682,7 +6851,9 @@ labeler.set_global_symbol_functions(
     get_custom_labels_data,
     save_custom_labels_data,
     get_show_label2,
-    save_show_label2
+    save_show_label2,
+    get_show_advanced_data,
+    save_show_advanced_data
 )
 
 -- Set up selection module functions

@@ -39,6 +39,11 @@ local get_custom_labels_data = nil
 local save_custom_labels_data = nil
 local get_show_label2 = nil
 local save_show_label2 = nil
+local get_show_advanced_data = nil
+local save_show_advanced_data = nil
+
+-- Location options for Advanced Data
+labeler.location_options = {"Off-Center", "Center", "Edge", "Rim", "Alt"}
 
 -- Custom label management
 labeler.custom_labels = {
@@ -50,7 +55,8 @@ labeler.custom_labels = {
 -- Set global symbol registry functions (extended with preference accessors)
 function labeler.set_global_symbol_functions(get_registry_func, assign_symbols_func, save_registry_func,
                                               get_custom_labels_func, save_custom_labels_func,
-                                              get_show_label2_func, save_show_label2_func)
+                                              get_show_label2_func, save_show_label2_func,
+                                              get_show_advanced_data_func, save_show_advanced_data_func)
     get_global_symbol_registry = get_registry_func
     assign_symbols_to_instrument = assign_symbols_func
     save_global_symbol_registry = save_registry_func
@@ -58,6 +64,8 @@ function labeler.set_global_symbol_functions(get_registry_func, assign_symbols_f
     save_custom_labels_data = save_custom_labels_func
     get_show_label2 = get_show_label2_func
     save_show_label2 = save_show_label2_func
+    get_show_advanced_data = get_show_advanced_data_func
+    save_show_advanced_data = save_show_advanced_data_func
     
     -- Load custom labels from preferences on initialization
     labeler.load_custom_labels()
@@ -172,13 +180,13 @@ local function slice_preview_timer_callback()
     end
 end
 
--- Update preview button visual (▸ when stopped, ■ when playing)
+-- Update preview button visual (â–¸ when stopped, â–  when playing)
 local function update_preview_button(button_id, dialog_vb, is_playing)
     if not dialog_vb then return end
     
     local button = dialog_vb.views[button_id]
     if button then
-        button.text = is_playing and "■" or "▸"
+        button.text = is_playing and "â– " or "â–¸"
     end
 end
 
@@ -424,8 +432,8 @@ function labeler.export_labels()
         return
     end
     
-    -- Full header for BreakPal/HotSwap compatibility
-    file:write("Index,Label,Label 2,Breakpoint,Cycle,Roll,Ghost,Shuffle,[Ref]Instrument,[Ref]SliceNote\n")
+    -- Full header for BreakPal/HotSwap compatibility (added Location, Counterstroke)
+    file:write("Index,Label,Label 2,Breakpoint,Location,Cycle,Ghost,Counterstroke,[Ref]Instrument,[Ref]SliceNote\n")
 
     -- Sort keys for consistent output
     local sorted_keys = {}
@@ -445,10 +453,10 @@ function labeler.export_labels()
             data.label or "---------",
             data.label2 or "---------",
             tostring(data.breakpoint or false),
-            "false",  -- Cycle (not used by BreakFast)
-            "false",  -- Roll (not used by BreakFast)
-            "false",  -- Ghost (not used by BreakFast)
-            "false",  -- Shuffle (not used by BreakFast)
+            data.location or "Off-Center",
+            tostring(data.cycle or false),
+            tostring(data.ghost or false),
+            tostring(data.counterstroke or false),
             tostring((data.instrument_index or 1) - 1),  -- 0-based for display
             tostring(slice_note)
         }
@@ -501,13 +509,18 @@ function labeler.import_labels()
             column_positions.breakpoint = i
         elseif lower_field == "instrument" or lower_field == "[ref]instrument" then
             column_positions.instrument = i
-        -- We read but ignore these columns from BreakPal/HotSwap
+        -- Advanced data fields
+        elseif lower_field == "location" then
+            column_positions.location = i
         elseif lower_field == "cycle" then
             column_positions.cycle = i
-        elseif lower_field == "roll" then
-            column_positions.roll = i
         elseif lower_field == "ghost" then
             column_positions.ghost = i
+        elseif lower_field == "counterstroke" then
+            column_positions.counterstroke = i
+        -- Legacy columns (read but converted/ignored)
+        elseif lower_field == "roll" then
+            column_positions.roll = i
         elseif lower_field == "shuffle" then
             column_positions.shuffle = i
         elseif lower_field == "[ref]slicenote" then
@@ -534,7 +547,7 @@ function labeler.import_labels()
         return
     end
 
-    -- Note: Label 2 and Instrument columns are optional for backward compatibility
+    -- Note: Label 2, Instrument, and Advanced Data columns are optional for backward compatibility
 
     local new_labels = {}
     local line_number = 1
@@ -588,11 +601,46 @@ function labeler.import_labels()
             if label2 == "" then label2 = "---------" end
         end
 
+        -- Get Location if present (default: Off-Center)
+        local location = "Off-Center"
+        if column_positions.location and #fields >= column_positions.location then
+            local loc_value = unescape_csv_field(fields[column_positions.location])
+            -- Validate location is in valid options
+            for _, valid_loc in ipairs(labeler.location_options) do
+                if loc_value == valid_loc then
+                    location = loc_value
+                    break
+                end
+            end
+        end
+
+        -- Get Cycle if present (default: false)
+        local cycle = false
+        if column_positions.cycle and #fields >= column_positions.cycle then
+            cycle = str_to_bool(fields[column_positions.cycle])
+        end
+
+        -- Get Ghost if present (default: false)
+        local ghost = false
+        if column_positions.ghost and #fields >= column_positions.ghost then
+            ghost = str_to_bool(fields[column_positions.ghost])
+        end
+
+        -- Get Counterstroke if present (default: false)
+        local counterstroke = false
+        if column_positions.counterstroke and #fields >= column_positions.counterstroke then
+            counterstroke = str_to_bool(fields[column_positions.counterstroke])
+        end
+
         new_labels[index] = {
             label = unescape_csv_field(fields[column_positions.label]),
             label2 = label2,
             breakpoint = str_to_bool(fields[column_positions.breakpoint]),
-            instrument_index = instrument_index
+            instrument_index = instrument_index,
+            location = location,
+            cycle = cycle,
+            ghost = ghost,
+            counterstroke = counterstroke
         }
     end
     
@@ -890,6 +938,9 @@ function labeler.show_dialog()
     -- Get show_label2 state from preferences
     local show_label2 = get_show_label2 and get_show_label2() or false
     
+    -- Get show_advanced_data state from preferences
+    local show_advanced_data = get_show_advanced_data and get_show_advanced_data() or false
+    
     -- Prepare mapping data with existing labels
     local mapping_data = {}
     for _, mapping in ipairs(note_mappings) do
@@ -902,7 +953,15 @@ function labeler.show_dialog()
             saved_label = current_labels[legacy_key]
         end
         
-        saved_label = saved_label or { label = "---------", label2 = "---------", breakpoint = false }
+        saved_label = saved_label or { 
+            label = "---------", 
+            label2 = "---------", 
+            breakpoint = false,
+            location = "Off-Center",
+            ghost = false,
+            counterstroke = false,
+            cycle = false
+        }
         
         table.insert(mapping_data, {
             note_value = mapping.note_value,
@@ -914,7 +973,11 @@ function labeler.show_dialog()
             hex_key = mapping.hex_key,
             label = saved_label.label or "---------",
             label2 = saved_label.label2 or "---------",
-            breakpoint = saved_label.breakpoint or false
+            breakpoint = saved_label.breakpoint or false,
+            location = saved_label.location or "Off-Center",
+            ghost = saved_label.ghost or false,
+            counterstroke = saved_label.counterstroke or false,
+            cycle = saved_label.cycle or false
         })
     end
     
@@ -941,45 +1004,58 @@ function labeler.show_dialog()
     -- Preview column width
     local preview_column_width = 22
     
-    -- Build header row based on show_label2 state
-    local header_row
+    -- Column widths for advanced data
+    local location_column_width = 80
+    local checkbox_column_width = 50
+    
+    -- Build header row based on show_label2 and show_advanced_data states
+    local header_elements = {
+        dialog_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
+        dialog_vb:text { text = "Note", width = narrow_column, align = "center", font = "bold" },
+        dialog_vb:text { text = "Sample", width = column_width, align = "center", font = "bold" },
+        dialog_vb:text { text = "Label", width = column_width, align = "center", font = "bold" },
+        dialog_vb:button { 
+            text = show_label2 and "[-]" or "[+]", 
+            width = 25,
+            tooltip = show_label2 and "Hide Label 2 column" or "Show Label 2 column",
+            notifier = function()
+                if save_show_label2 then save_show_label2(not show_label2) end
+                rebuild_dialog()
+            end
+        }
+    }
+    
+    -- Add Label 2 column if enabled
     if show_label2 then
-        header_row = dialog_vb:row {
-            spacing = spacing,
-            dialog_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
-            dialog_vb:text { text = "Note", width = narrow_column, align = "center", font = "bold" },
-            dialog_vb:text { text = "Sample", width = column_width, align = "center", font = "bold" },
-            dialog_vb:text { text = "Label", width = column_width, align = "center", font = "bold" },
-            dialog_vb:button { 
-                text = "[-]", 
-                width = 25,
-                tooltip = "Hide Label 2 column",
-                notifier = function()
-                    if save_show_label2 then save_show_label2(false) end
-                    rebuild_dialog()
-                end
-            },
-            dialog_vb:text { text = "Label 2", width = column_width, align = "center", font = "bold" },
-            dialog_vb:text { text = "Breakpoint", width = 70, align = "center", font = "bold" }
-        }
-    else
-        header_row = dialog_vb:row {
-            spacing = spacing,
-            dialog_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
-            dialog_vb:text { text = "Note", width = narrow_column, align = "center", font = "bold" },
-            dialog_vb:text { text = "Sample", width = column_width, align = "center", font = "bold" },
-            dialog_vb:text { text = "Label", width = column_width, align = "center", font = "bold" },
-            dialog_vb:button { 
-                text = "[+]", 
-                width = 25,
-                tooltip = "Show Label 2 column",
-                notifier = function()
-                    if save_show_label2 then save_show_label2(true) end
-                    rebuild_dialog()
-                end
-            },
-            dialog_vb:text { text = "Breakpoint", width = 70, align = "center", font = "bold" }
-        }
+        table.insert(header_elements, dialog_vb:text { text = "Label 2", width = column_width, align = "center", font = "bold" })
+    end
+    
+    -- Add Breakpoint column
+    table.insert(header_elements, dialog_vb:text { text = "Breakpoint", width = 70, align = "center", font = "bold" })
+    
+    -- Add Advanced Data toggle button
+    table.insert(header_elements, dialog_vb:button { 
+        text = show_advanced_data and "Adv [-]" or "Adv [+]", 
+        width = 50,
+        tooltip = show_advanced_data and "Hide Advanced Data columns" or "Show Advanced Data columns",
+        notifier = function()
+            if save_show_advanced_data then save_show_advanced_data(not show_advanced_data) end
+            rebuild_dialog()
+        end
+    })
+    
+    -- Add Advanced Data columns if enabled
+    if show_advanced_data then
+        table.insert(header_elements, dialog_vb:text { text = "Location", width = location_column_width, align = "center", font = "bold" })
+        table.insert(header_elements, dialog_vb:text { text = "Ghost", width = checkbox_column_width, align = "center", font = "bold" })
+        table.insert(header_elements, dialog_vb:text { text = "CStroke", width = checkbox_column_width, align = "center", font = "bold" })
+        table.insert(header_elements, dialog_vb:text { text = "Cycle", width = checkbox_column_width, align = "center", font = "bold" })
+    end
+    
+    -- Build header row from elements
+    local header_row = dialog_vb:row { spacing = spacing }
+    for _, element in ipairs(header_elements) do
+        header_row:add_child(element)
     end
     
     -- Create dialog content
@@ -1043,7 +1119,7 @@ function labeler.show_dialog()
             -- Preview button (Phase 6)
             dialog_vb:button {
                 id = preview_button_id,
-                text = "▸",
+                text = "â–¸",
                 width = preview_column_width,
                 tooltip = "Preview this slice",
                 notifier = function()
@@ -1080,10 +1156,10 @@ function labeler.show_dialog()
             }
         }
         
+        -- Spacer for Label 2 toggle button alignment
+        table.insert(row_elements, dialog_vb:space { width = 25 })
+        
         if show_label2 then
-            -- Spacer for toggle button alignment
-            table.insert(row_elements, dialog_vb:space { width = 25 })
-            
             -- Label 2 dropdown
             table.insert(row_elements, dialog_vb:popup {
                 id = "label2_" .. i,
@@ -1091,9 +1167,6 @@ function labeler.show_dialog()
                 width = column_width,
                 value = table.find(label_options, mapping.label2) or 1
             })
-        else
-            -- Spacer for toggle button alignment
-            table.insert(row_elements, dialog_vb:space { width = 25 })
         end
         
         -- Breakpoint checkbox
@@ -1124,6 +1197,50 @@ function labeler.show_dialog()
             }
         })
         
+        -- Spacer for Advanced Data toggle button alignment
+        table.insert(row_elements, dialog_vb:space { width = 50 })
+        
+        -- Advanced Data fields (when enabled)
+        if show_advanced_data then
+            -- Location dropdown
+            table.insert(row_elements, dialog_vb:popup {
+                id = "location_" .. i,
+                items = labeler.location_options,
+                width = location_column_width,
+                value = table.find(labeler.location_options, mapping.location) or 1
+            })
+            
+            -- Ghost checkbox
+            table.insert(row_elements, dialog_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                dialog_vb:checkbox {
+                    id = "ghost_" .. i,
+                    value = mapping.ghost
+                }
+            })
+            
+            -- Counterstroke checkbox
+            table.insert(row_elements, dialog_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                dialog_vb:checkbox {
+                    id = "counterstroke_" .. i,
+                    value = mapping.counterstroke
+                }
+            })
+            
+            -- Cycle checkbox
+            table.insert(row_elements, dialog_vb:horizontal_aligner {
+                mode = "center",
+                width = checkbox_column_width,
+                dialog_vb:checkbox {
+                    id = "cycle_" .. i,
+                    value = mapping.cycle
+                }
+            })
+        end
+        
         local row = dialog_vb:row {
             spacing = spacing,
             height = row_height
@@ -1153,6 +1270,7 @@ function labeler.show_dialog()
                     -- Collect labels
                     local new_labels = {}
                     local current_show_label2 = get_show_label2 and get_show_label2() or false
+                    local current_show_advanced_data = get_show_advanced_data and get_show_advanced_data() or false
 
                     for i, mapping in ipairs(mapping_data) do
                         local label_popup = dialog_vb.views["label_" .. i]
@@ -1164,13 +1282,49 @@ function labeler.show_dialog()
                             label2_value = label_popup.items[label2_popup.value]
                         end
                         
+                        -- Collect advanced data values
+                        local location_value = "Off-Center"
+                        local ghost_value = false
+                        local counterstroke_value = false
+                        local cycle_value = false
+                        
+                        if current_show_advanced_data then
+                            local location_popup = dialog_vb.views["location_" .. i]
+                            local ghost_field = dialog_vb.views["ghost_" .. i]
+                            local counterstroke_field = dialog_vb.views["counterstroke_" .. i]
+                            local cycle_field = dialog_vb.views["cycle_" .. i]
+                            
+                            if location_popup then
+                                location_value = labeler.location_options[location_popup.value]
+                            end
+                            if ghost_field then
+                                ghost_value = ghost_field.value
+                            end
+                            if counterstroke_field then
+                                counterstroke_value = counterstroke_field.value
+                            end
+                            if cycle_field then
+                                cycle_value = cycle_field.value
+                            end
+                        else
+                            -- Preserve existing values when advanced data is hidden
+                            location_value = mapping.location or "Off-Center"
+                            ghost_value = mapping.ghost or false
+                            counterstroke_value = mapping.counterstroke or false
+                            cycle_value = mapping.cycle or false
+                        end
+                        
                         new_labels[mapping.hex_key] = {
                             label = label_popup.items[label_popup.value],
                             label2 = label2_value,
                             breakpoint = breakpoint_field.value,
                             instrument_index = current_instrument_index,
                             note_value = mapping.note_value,
-                            is_slice = mapping.is_slice
+                            is_slice = mapping.is_slice,
+                            location = location_value,
+                            ghost = ghost_value,
+                            counterstroke = counterstroke_value,
+                            cycle = cycle_value
                         }
                     end
                     
