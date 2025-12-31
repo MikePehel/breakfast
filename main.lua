@@ -979,13 +979,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÂ¢Ã¢â‚¬Â¢Ã¢â‚¬Â
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÂ¢Ã¢â‚¬Â¢Ã¢â‚¬â€
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÂ¢Ã¢â‚¬Â¢Ã‚Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œ
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ‚Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢Ãƒâ€šÃ‚Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€¦Ã¢â‚¬Å“
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒâ€šÃ‚Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ÂÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -2150,7 +2150,7 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
             -- Phase 6: Preview button
             capture_vb:button {
                 id = preview_button_id,
-                text = "▸",
+                text = "â–¸",
                 width = preview_column_width,
                 tooltip = "Preview this note",
                 notifier = function()
@@ -2460,6 +2460,10 @@ function preview_symbol(symbol_name)
             -- Time in ms from start: (line - 1) * ms_per_line + delay * ms_per_delay_unit
             local trigger_time_ms = ((relative_line - 1) * ms_per_line) + (delay * ms_per_delay_unit)
             
+            -- Get the source instrument index (this is the actual instrument to trigger)
+            -- source_instrument_index is 1-based (Renoise convention)
+            local source_inst_idx = timing.source_instrument_index or symbol_data.instrument_index or 1
+            
             -- Check if this timing entry has note_columns (multi-column data)
             if timing.note_columns then
                 for col_idx, col_data in pairs(timing.note_columns) do
@@ -2468,19 +2472,22 @@ function preview_symbol(symbol_name)
                        col_data.note_value < 120 and
                        col_data.instrument_value and
                        col_data.instrument_value ~= 255 then
-                        local inst_idx = col_data.instrument_value + 1
+                        -- Calculate the slice trigger note from the instrument_value (slice number)
+                        -- Slice 1 = C#1 (note 37), Slice 2 = D-1 (note 38), etc.
+                        -- Formula: slice_note = 36 + slice_number
+                        local slice_note = 36 + col_data.instrument_value
                         local volume = col_data.volume_value or 0x80
                         local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
                             and 0.5 or (volume / 127)
                         
                         table.insert(scheduled_notes, {
-                            note_value = col_data.note_value,
-                            instrument_index = inst_idx,
+                            note_value = slice_note,
+                            instrument_index = source_inst_idx,
                             volume_normalized = vol_normalized,
                             trigger_time_ms = trigger_time_ms,
                             triggered = false
                         })
-                        print("DEBUG: Scheduled note", col_data.note_value, "inst", inst_idx, "at", trigger_time_ms, "ms")
+                        print("DEBUG: Scheduled note (multi-col) slice", col_data.instrument_value, "-> note", slice_note, "inst", source_inst_idx, "at", trigger_time_ms, "ms")
                     end
                 end
             -- Fallback to single note_value if no note_columns
@@ -2489,19 +2496,22 @@ function preview_symbol(symbol_name)
                    timing.note_value < 120 and
                    timing.instrument_value and
                    timing.instrument_value ~= 255 then
-                local inst_idx = timing.instrument_value + 1
+                -- Calculate the slice trigger note from the instrument_value (slice number)
+                -- Slice 1 = C#1 (note 37), Slice 2 = D-1 (note 38), etc.
+                -- Formula: slice_note = 36 + slice_number
+                local slice_note = 36 + timing.instrument_value
                 local volume = timing.volume_value or 0x80
                 local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
                     and 0.5 or (volume / 127)
                 
                 table.insert(scheduled_notes, {
-                    note_value = timing.note_value,
-                    instrument_index = inst_idx,
+                    note_value = slice_note,
+                    instrument_index = source_inst_idx,
                     volume_normalized = vol_normalized,
                     trigger_time_ms = trigger_time_ms,
                     triggered = false
                 })
-                print("DEBUG: Scheduled note (fallback)", timing.note_value, "inst", inst_idx, "at", trigger_time_ms, "ms")
+                print("DEBUG: Scheduled note (fallback) slice", timing.instrument_value, "-> note", slice_note, "inst", source_inst_idx, "at", trigger_time_ms, "ms")
             end
         end
     end

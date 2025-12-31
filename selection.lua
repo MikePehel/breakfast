@@ -591,6 +591,7 @@ end
 
 -- Convert range symbol to break_set format for compatibility with placement system
 -- Phase 5: Now includes track information in timing entries
+-- FIXED: Now normalizes delays like breakpoints.lua - first note gets delay 0, others adjusted relative
 function selection.convert_to_break_set(symbol_data)
     local break_set = {
         timing = {},
@@ -603,6 +604,15 @@ function selection.convert_to_break_set(symbol_data)
         track_names = symbol_data.track_names or {},
         is_multi_track = symbol_data.is_multi_track or false
     }
+    
+    -- Get delay adjustment from first note (to normalize so first note has delay 0)
+    -- This matches how breakpoints.lua handles timing normalization
+    local delay_adjustment = 0
+    local base_line = 1
+    if #symbol_data.notes > 0 then
+        delay_adjustment = symbol_data.notes[1].delay_value or 0
+        base_line = symbol_data.notes[1].line or 1
+    end
     
     -- Convert content to timing format (similar to breakpoints)
     for i, content in ipairs(symbol_data.notes) do
@@ -624,12 +634,33 @@ function selection.convert_to_break_set(symbol_data)
         -- Convert from 0-based instrument_value to 1-based instrument index
         local source_instrument_index = valid_instrument_value + 1
         
-        -- Create timing entry
+        -- Calculate normalized delay and relative line (like breakpoints.lua)
+        local normalized_delay
+        local relative_line = content.line
+        local adjusted_distance = content.distance_to_next
+        
+        if i == 1 then
+            -- First note: delay becomes 0, distance increases by delay_adjustment
+            normalized_delay = 0
+            adjusted_distance = content.distance_to_next + delay_adjustment
+        else
+            -- Subsequent notes: subtract delay_adjustment from delay
+            normalized_delay = content.delay_value - delay_adjustment
+            
+            -- Handle negative delay by moving to previous line
+            if normalized_delay < 0 then
+                relative_line = relative_line - 1
+                normalized_delay = 256 + normalized_delay
+            end
+        end
+        
+        -- Create timing entry with normalized delay
         local timing_entry = {
             instrument_value = valid_instrument_value,
-            relative_line = content.line,
-            new_delay = content.delay_value,
-            original_distance = content.distance_to_next,
+            relative_line = relative_line,
+            new_delay = normalized_delay,
+            original_delay = content.delay_value,  -- Keep original for reference
+            original_distance = adjusted_distance,
             source_instrument_index = source_instrument_index,
             note_value = valid_note_value,
             volume_value = content.volume_value,
@@ -647,12 +678,12 @@ function selection.convert_to_break_set(symbol_data)
         }
         table.insert(break_set.timing, timing_entry)
         
-        -- Create note entry for compatibility
+        -- Create note entry for compatibility (keeps original delay_value for display purposes)
         local note_entry = {
             line = content.line,
             note_value = valid_note_value,
             instrument_value = valid_instrument_value,
-            delay_value = content.delay_value,
+            delay_value = content.delay_value,  -- Keep original for display
             volume_value = content.volume_value,
             panning_value = content.panning_value,
             effect_number_value = content.effect_number_value,

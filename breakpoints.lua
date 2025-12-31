@@ -150,11 +150,24 @@ local function get_breakpoint_indices(saved_labels)
     
     print("DEBUG: get_breakpoint_indices processing saved_labels:")
     for hex_key, label_data in pairs(saved_labels) do
-        print("DEBUG: hex_key:", hex_key, "label:", label_data.label, "breakpoint:", label_data.breakpoint)
+        print("DEBUG: hex_key:", hex_key, "label:", label_data.label, "breakpoint:", label_data.breakpoint, "is_slice:", label_data.is_slice)
+        
+        -- Skip the source sample (hex_key "00" with is_slice = false)
+        -- The source sample is not a slice and should not be used for breakpoint analysis
         if label_data.breakpoint then
-            local index = tonumber(hex_key, 16) - 1
-            breakpoint_indices[index] = true
-            print("DEBUG: Added breakpoint at index:", index, "from hex_key:", hex_key)
+            -- Check if this is the source sample (hex_key "00" and is_slice is explicitly false)
+            -- Source sample has is_slice = false, slices have is_slice = true
+            if hex_key == "00" and label_data.is_slice == false then
+                print("DEBUG: Skipping source sample (hex_key 00, is_slice=false) for breakpoint analysis")
+            else
+                -- For slices: hex_key "01" = slice 1 = instrument_value 1 in phrase
+                -- hex_key "03" = slice 3 = instrument_value 3, etc.
+                -- The phrase's instrument_value is 1-based (same as the hex_key value)
+                -- So no subtraction is needed
+                local index = tonumber(hex_key, 16)
+                breakpoint_indices[index] = true
+                print("DEBUG: Added breakpoint at index:", index, "from hex_key:", hex_key)
+            end
         end
     end
     
