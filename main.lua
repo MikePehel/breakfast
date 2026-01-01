@@ -72,6 +72,11 @@ local multi_track_distance_mode = {
 
 local current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
 
+-- Ignore blank tracks at capture setting
+-- When enabled: empty tracks in selection are ignored
+-- When disabled (default): empty tracks get phantom note entries for proper cross-symbol chaining
+local current_ignore_blank_tracks = false
+
 -- Input lock state and callback
 local input_lock_active = false
 local current_dialog_vb = nil
@@ -993,13 +998,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -2232,7 +2237,7 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
             -- Phase 6: Preview button
             capture_vb:button {
                 id = preview_button_id,
-                text = "▸",
+                text = "Ã¢â€“Â¸",
                 width = preview_column_width,
                 tooltip = "Preview this note",
                 notifier = function()
@@ -4454,7 +4459,7 @@ local function create_compact_overwrite_section(vb)
                     end
                 end
             },
-            vb:text { text = "T", width = 15 }
+            vb:text { text = "P", width = 15 }
         },
         vb:row {
             spacing = 5,
@@ -4613,6 +4618,17 @@ local function create_compact_multi_track_distance_section(vb)
                 end
             },
             vb:text { text = "L", width = 10, tooltip = "Sync to Last" }
+        },
+        vb:row {
+            spacing = 5,
+            vb:checkbox {
+                id = "compact_mt_skip_blank",
+                value = current_ignore_blank_tracks,
+                notifier = function(value)
+                    current_ignore_blank_tracks = value
+                end
+            },
+            vb:text { text = "S", width = 10, tooltip = "Skip Blank Tracks at Capture" }
         }
     }
 end
@@ -4647,6 +4663,125 @@ local function toggle_ui_collapse(vb)
     end
     if vb.views.action_buttons then
         vb.views.action_buttons.visible = not ui_collapsed
+    end
+    
+    -- Sync checkbox states between compact and expanded views
+    if ui_collapsed then
+        -- Switching to compact view - update compact checkboxes to match current state
+        
+        -- Overflow behavior
+        if vb.views.compact_overflow_extend then
+            vb.views.compact_overflow_extend.value = (current_overflow_behavior == overflow_behavior.EXTEND)
+        end
+        if vb.views.compact_overflow_next then
+            vb.views.compact_overflow_next.value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN)
+        end
+        if vb.views.compact_overflow_truncate then
+            vb.views.compact_overflow_truncate.value = (current_overflow_behavior == overflow_behavior.TRUNCATE)
+        end
+        if vb.views.compact_overflow_loop then
+            vb.views.compact_overflow_loop.value = (current_overflow_behavior == overflow_behavior.LOOP)
+        end
+        
+        -- Overwrite behavior
+        if vb.views.compact_overwrite_sum then
+            vb.views.compact_overwrite_sum.value = (current_overwrite_behavior == overwrite_behavior.SUM)
+        end
+        if vb.views.compact_overwrite_replace then
+            vb.views.compact_overwrite_replace.value = (current_overwrite_behavior == overwrite_behavior.REPLACE)
+        end
+        if vb.views.compact_overwrite_substitute then
+            vb.views.compact_overwrite_substitute.value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE)
+        end
+        if vb.views.compact_overwrite_retain then
+            vb.views.compact_overwrite_retain.value = (current_overwrite_behavior == overwrite_behavior.RETAIN)
+        end
+        if vb.views.compact_overwrite_exclude then
+            vb.views.compact_overwrite_exclude.value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE)
+        end
+        if vb.views.compact_overwrite_intersect then
+            vb.views.compact_overwrite_intersect.value = (current_overwrite_behavior == overwrite_behavior.INTERSECT)
+        end
+        
+        -- Instrument source behavior
+        if vb.views.compact_instrument_source_embedded then
+            vb.views.compact_instrument_source_embedded.value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED)
+        end
+        if vb.views.compact_instrument_source_current then
+            vb.views.compact_instrument_source_current.value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED)
+        end
+        
+        -- Multi-track distance mode
+        if vb.views.compact_mt_sync_first then
+            vb.views.compact_mt_sync_first.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST)
+        end
+        if vb.views.compact_mt_independent then
+            vb.views.compact_mt_independent.value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT)
+        end
+        if vb.views.compact_mt_sync_last then
+            vb.views.compact_mt_sync_last.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST)
+        end
+        if vb.views.compact_mt_skip_blank then
+            vb.views.compact_mt_skip_blank.value = current_ignore_blank_tracks
+        end
+    else
+        -- Switching to expanded view - update expanded checkboxes to match current state
+        
+        -- Overflow behavior
+        if vb.views.overflow_extend then
+            vb.views.overflow_extend.value = (current_overflow_behavior == overflow_behavior.EXTEND)
+        end
+        if vb.views.overflow_next_pattern then
+            vb.views.overflow_next_pattern.value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN)
+        end
+        if vb.views.overflow_truncate then
+            vb.views.overflow_truncate.value = (current_overflow_behavior == overflow_behavior.TRUNCATE)
+        end
+        if vb.views.overflow_loop then
+            vb.views.overflow_loop.value = (current_overflow_behavior == overflow_behavior.LOOP)
+        end
+        
+        -- Overwrite behavior
+        if vb.views.overwrite_sum then
+            vb.views.overwrite_sum.value = (current_overwrite_behavior == overwrite_behavior.SUM)
+        end
+        if vb.views.overwrite_replace then
+            vb.views.overwrite_replace.value = (current_overwrite_behavior == overwrite_behavior.REPLACE)
+        end
+        if vb.views.overwrite_substitute then
+            vb.views.overwrite_substitute.value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE)
+        end
+        if vb.views.overwrite_retain then
+            vb.views.overwrite_retain.value = (current_overwrite_behavior == overwrite_behavior.RETAIN)
+        end
+        if vb.views.overwrite_exclude then
+            vb.views.overwrite_exclude.value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE)
+        end
+        if vb.views.overwrite_intersect then
+            vb.views.overwrite_intersect.value = (current_overwrite_behavior == overwrite_behavior.INTERSECT)
+        end
+        
+        -- Instrument source behavior
+        if vb.views.instrument_source_embedded then
+            vb.views.instrument_source_embedded.value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED)
+        end
+        if vb.views.instrument_source_current then
+            vb.views.instrument_source_current.value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED)
+        end
+        
+        -- Multi-track distance mode
+        if vb.views.mt_sync_first then
+            vb.views.mt_sync_first.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST)
+        end
+        if vb.views.mt_independent then
+            vb.views.mt_independent.value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT)
+        end
+        if vb.views.mt_sync_last then
+            vb.views.mt_sync_last.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST)
+        end
+        if vb.views.mt_ignore_blank_tracks then
+            vb.views.mt_ignore_blank_tracks.value = current_ignore_blank_tracks
+        end
     end
 end
 
@@ -5419,7 +5554,7 @@ local function create_symbol_editor_dialog()
                                         end
                                     },
                                     vb:text {
-                                        text = "Retain",
+                                        text = "Preserve",
                                         width = 70
                                     }
                                 }
@@ -5534,7 +5669,7 @@ local function create_symbol_editor_dialog()
                     }
                 },
 
-                -- Phase 5: Multi-track distance mode section (collapsible)
+                -- Phase 5: Multi-track settings section (collapsible)
                 vb:column {
                     id = "multi_track_distance_section",
                     visible = not ui_collapsed,
@@ -5542,7 +5677,7 @@ local function create_symbol_editor_dialog()
                     margin = 10,
                     width = 430,
                     vb:text {
-                        text = "Multi-Track Capture",
+                        text = "Multi-Track Settings",
                         font = "big",
                         style = "strong"
                     },
@@ -5606,6 +5741,21 @@ local function create_symbol_editor_dialog()
                             },
                             vb:text {
                                 text = "Sync to Last (longest cutoff, no extra notes)",
+                                width = 350
+                            }
+                        },
+                        vb:space { height = 5 },
+                        vb:row {
+                            spacing = 10,
+                            vb:checkbox {
+                                id = "mt_ignore_blank_tracks",
+                                value = current_ignore_blank_tracks,
+                                notifier = function(value)
+                                    current_ignore_blank_tracks = value
+                                end
+                            },
+                            vb:text {
+                                text = "Skip Blank Tracks at Capture",
                                 width = 350
                             }
                         }
@@ -6842,6 +6992,11 @@ function get_multi_track_distance_mode_constants()
     return multi_track_distance_mode
 end
 
+-- Get ignore blank tracks at capture setting
+function get_ignore_blank_tracks_at_capture()
+    return current_ignore_blank_tracks
+end
+
 -- Set up labeler callback to refresh main dialog and provide global symbol functions
 labeler.set_refresh_callback(safe_labeler_refresh)
 labeler.set_global_symbol_functions(
@@ -6858,6 +7013,10 @@ labeler.set_global_symbol_functions(
 
 -- Set up selection module functions
 selection.set_global_symbol_functions(get_global_symbol_registry, find_next_available_symbols, save_global_symbol_registry)
+-- Phase 5: Set multi-track distance mode functions for selection module
+selection.set_multi_track_mode_functions(get_multi_track_distance_mode, get_multi_track_distance_mode_constants)
+-- Set ignore blank tracks function for selection module
+selection.set_ignore_blank_tracks_function(get_ignore_blank_tracks_at_capture)
 
 -- Add periodic check for when labeler closes to trigger additional refresh
 local labeler_was_open = false

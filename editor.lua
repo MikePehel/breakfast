@@ -233,15 +233,82 @@ local function apply_timing_adjustment(set, adjusted_delay, next_start_line)
     return adjusted_set
 end
 
+-- Phase 5 Refactor: Get chaining info based on current distance mode
+-- Returns { unified = true/false, source_track = track_offset, source_info = per_track_info entry }
+-- Must be defined before calculate_stitched_placement_positions which uses it
+local function get_chaining_info_for_mode(break_set)
+    if not break_set.is_multi_track or not break_set.per_track_info then
+        return nil
+    end
+    
+    -- Get mode from main module
+    if not get_multi_track_distance_mode or not get_multi_track_distance_mode_constants then
+        print("DEBUG: Distance mode functions not available")
+        return nil
+    end
+    
+    local mode = get_multi_track_distance_mode()
+    local constants = get_multi_track_distance_mode_constants()
+    
+    if mode == constants.INDEPENDENT then
+        -- Independent mode - no unified chaining
+        return { unified = false }
+    end
+    
+    -- Find earliest or latest next note across tracks
+    local selected_track = nil
+    local selected_info = nil
+    local selected_tick = nil
+    
+    for track_offset, info in pairs(break_set.per_track_info) do
+        local tick = info.next_note.line * 256 + info.next_note.delay
+        
+        if mode == constants.SYNC_FIRST then
+            -- Find earliest (minimum tick)
+            if not selected_tick or tick < selected_tick then
+                selected_tick = tick
+                selected_track = track_offset
+                selected_info = info
+            end
+        elseif mode == constants.SYNC_LAST then
+            -- Find latest (maximum tick)
+            if not selected_tick or tick > selected_tick then
+                selected_tick = tick
+                selected_track = track_offset
+                selected_info = info
+            end
+        end
+    end
+    
+    if selected_track then
+        print("DEBUG: Mode " .. mode .. " selected track " .. selected_track .. " with next note at tick " .. selected_tick)
+        return {
+            unified = true,
+            source_track = selected_track,
+            source_info = selected_info
+        }
+    end
+    
+    return nil
+end
+
 -- Calculate stitched placement positions using breakpoints logic (CORRECTED: Simple cursor position fix)
 local function calculate_stitched_placement_positions(break_set, start_line, last_symbol_timing, symbol_type)
+    print("DEBUG: calculate_stitched_placement_positions - break_set.track_count = " .. tostring(break_set.track_count))
     local placement_info = {
         notes = {},
         next_line = start_line,
-        last_note_distance = nil  -- Track the last note's distance for pattern extension
+        last_note_distance = nil,  -- Track the last note's distance for pattern extension
+        -- Phase 5: Include multi-track metadata
+        is_multi_track = break_set.is_multi_track or false,
+        track_count = break_set.track_count or 1,
+        -- Phase 5 Refactor: Pass through per_track_info for state tracking
+        per_track_info = break_set.per_track_info or {}
     }
+    print("DEBUG: placement_info.track_count set to " .. placement_info.track_count)
     
     local current_set = break_set
+    local is_multi_track = break_set.is_multi_track or false
     
     -- If we have timing from a previous symbol, apply stitching logic
     if last_symbol_timing then
@@ -256,27 +323,82 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
         local next_start_line = prev_line + line_gap + 1
         
         print("DEBUG: Timing calculation - prev_line=" .. prev_line .. ", line_gap=" .. line_gap .. ", calculated next_start_line=" .. next_start_line .. ", but placement start_line=" .. start_line)
+        print("DEBUG: adjusted_delay=" .. adjusted_delay)
         
-        -- FIXED: Use the actual placement start_line, not the calculated next_start_line
-        -- Apply timing adjustment using the same logic as breakpoints
-        current_set = apply_timing_adjustment(break_set, adjusted_delay, start_line)
+        if is_multi_track then
+            -- MULTI-TRACK: Store adjusted_delay for use in the placement loop
+            -- We also need to know the symbol's first note delay to normalize properly
+            current_set = break_set  -- Don't modify the timing entries
+            placement_info.multi_track_start_delay_adjustment = adjusted_delay
+            
+            -- Get the first note's delay from the symbol (for normalization)
+            local first_note_delay = 0
+            if #break_set.timing > 0 then
+                first_note_delay = break_set.timing[1].new_delay or 0
+            end
+            placement_info.multi_track_first_note_delay = first_note_delay
+            
+            print("DEBUG: Multi-track symbol - adjusted_delay=" .. adjusted_delay .. ", first_note_delay=" .. first_note_delay)
+        else
+            -- Single-track: Apply timing adjustment as before (modifies all timing entries)
+            current_set = apply_timing_adjustment(break_set, adjusted_delay, start_line)
+        end
         
-        -- DON'T update start_line - keep the placement position
-        print("DEBUG: Using placement start_line=" .. start_line .. " instead of calculated=" .. next_start_line)
+        print("DEBUG: Using placement start_line=" .. start_line)
     end
     
     local base_line = start_line
     local last_note_timing = nil
     
+    -- Get multi-track adjustment values (if applicable)
+    local multi_track_adj = placement_info.multi_track_start_delay_adjustment or 0
+    local multi_track_first_delay = placement_info.multi_track_first_note_delay or 0
+    
     for _, timing in ipairs(current_set.timing) do
-        -- SIMPLE FIX: For first symbol, use cursor position; for chained symbols, use calculated position
         local target_line
-        if last_symbol_timing then
-            -- Chained symbol - use the calculated relative position
+        local target_delay
+        
+        if last_symbol_timing and is_multi_track then
+            -- MULTI-TRACK CHAINED SYMBOL
+            -- Multi-track preserves original delays, so we need to:
+            -- 1. Normalize by subtracting the first note's delay
+            -- 2. Add the adjusted_delay (just like single-track does)
+            -- 3. Handle overflow
+            -- Formula: target_delay = timing.new_delay - first_note_delay + adjusted_delay
+            
+            local normalized_delay = timing.new_delay - multi_track_first_delay + multi_track_adj
+            local line_increment = 0
+            
+            -- Handle overflow (delay >= 256) or underflow (delay < 0)
+            if normalized_delay >= 256 then
+                line_increment = math.floor(normalized_delay / 256)
+                normalized_delay = normalized_delay % 256
+            elseif normalized_delay < 0 then
+                -- Underflow: move to previous line
+                line_increment = math.floor(normalized_delay / 256)  -- Will be negative
+                normalized_delay = normalized_delay % 256
+                if normalized_delay < 0 then
+                    normalized_delay = normalized_delay + 256
+                    line_increment = line_increment - 1
+                end
+            end
+            
+            target_line = base_line + timing.relative_line - 1 + line_increment
+            target_delay = normalized_delay
+            
+            print("DEBUG: Multi-track chained (track " .. (timing.track_offset or 0) .. 
+                  ") - relative_line=" .. timing.relative_line .. ", delay=" .. timing.new_delay .. 
+                  ", normalized=" .. (timing.new_delay - multi_track_first_delay) ..
+                  " + adj=" .. multi_track_adj .. " -> target_line=" .. target_line .. ", target_delay=" .. target_delay)
+                  
+        elseif last_symbol_timing then
+            -- Single-track chained symbol - timing already adjusted by apply_timing_adjustment
             target_line = timing.relative_line
+            target_delay = timing.new_delay
         else
-            -- First symbol - place relative to cursor position
+            -- First symbol (not chained) - place relative to cursor position
             target_line = base_line + timing.relative_line - 1
+            target_delay = timing.new_delay
         end
         
         -- Calculate note value based on symbol type
@@ -291,7 +413,7 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
         
         table.insert(placement_info.notes, {
             line = target_line,
-            delay = timing.new_delay,
+            delay = target_delay,
             instrument_value = timing.instrument_value,
             note_value = note_value,
             source_instrument_index = timing.source_instrument_index,
@@ -304,52 +426,145 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
             effect_number_value = timing.effect_number_value,
             effect_amount_value = timing.effect_amount_value,
             effect_columns = timing.effect_columns or {},
-            note_columns = timing.note_columns or {}
+            -- Phase 5: For multi-track symbols, don't copy note_columns (each note is from a different track)
+            -- For single-track symbols, preserve note_columns for multi-column placement
+            note_columns = is_multi_track and {} or (timing.note_columns or {}),
+            -- Phase 5: Include track information for multi-track placement
+            track_index = timing.track_index,
+            track_offset = timing.track_offset or 0
         })
         
         -- Keep track of the last note timing for calculating next symbol position
         last_note_timing = timing
     end
     
-    -- Calculate next placement line based on the last note's distance
-    if last_note_timing then
-        -- Use the original distance from the breakpoints analysis
-        local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
-        local distance_delay = last_note_timing.original_distance % 256
-        
-        -- Calculate the effective end position
-        local last_note_line
-        if last_symbol_timing then
-            -- Chained symbol
-            last_note_line = last_note_timing.relative_line
+    -- Phase 5 Refactor: Calculate next_line based on per_track_info and distance mode
+    -- For Sync modes, we use the unified cutoff from per_track_info
+    if is_multi_track and break_set.per_track_info and next(break_set.per_track_info) then
+        local mode_info = get_chaining_info_for_mode(break_set)
+        if mode_info and mode_info.unified then
+            -- Sync First or Sync Last: use the selected track's next_note position
+            local source_info = mode_info.source_info
+            local source_track_offset = mode_info.source_track
+            local is_phantom = source_info.is_phantom or false
+            local source_distance = source_info.last_note.distance_to_next
+            
+            -- Find the source track's last note in our PLACED notes (not timing entries)
+            -- This ensures we use the actual placed positions
+            local source_last_placed_note = nil
+            for _, note in ipairs(placement_info.notes) do
+                if (note.track_offset or 0) == source_track_offset then
+                    source_last_placed_note = note  -- Keep updating to get the LAST one
+                end
+            end
+            
+            -- Calculate the ACTUAL placed line for the source track's last note
+            -- This is critical for chaining calculations
+            local effective_last_line
+            local effective_last_delay
+            
+            if source_last_placed_note then
+                -- Found the placed note for source track - use its ACTUAL position
+                effective_last_line = source_last_placed_note.line
+                effective_last_delay = source_last_placed_note.delay or 0
+                
+                print("DEBUG: Sync mode - found source track " .. source_track_offset .. 
+                      " in placed notes, last note at line " .. effective_last_line .. ", delay " .. effective_last_delay)
+            elseif is_phantom then
+                -- Phantom track: no actual notes, use the placement start as reference
+                effective_last_line = base_line
+                effective_last_delay = 0
+                
+                print("DEBUG: Sync mode (phantom) - track " .. source_track_offset .. 
+                      " is empty, using base_line " .. base_line .. " as reference")
+            else
+                -- Fallback: source track has notes in per_track_info but not in placed notes
+                -- This shouldn't normally happen, but handle it gracefully
+                effective_last_line = base_line + source_info.last_note.line - 1
+                effective_last_delay = source_info.last_note.delay or 0
+                
+                print("DEBUG: Sync mode - WARNING: source track " .. source_track_offset .. 
+                      " not found in placed notes, using source_info. Placed line: " .. effective_last_line)
+            end
+            
+            -- Calculate next_line using the source track's distance
+            local distance_in_lines = math.floor(source_distance / 256)
+            local distance_delay = source_distance % 256
+            
+            placement_info.next_line = effective_last_line + distance_in_lines
+            -- Account for delay overflow
+            if effective_last_delay + distance_delay >= 256 then
+                placement_info.next_line = placement_info.next_line + 1
+            end
+            
+            print("DEBUG: Sync mode - track " .. source_track_offset .. 
+                  ", effective last line: " .. effective_last_line ..
+                  ", delay: " .. effective_last_delay ..
+                  ", distance: " .. source_distance .. 
+                  ", next_line: " .. placement_info.next_line)
+            
+            -- Create last_timing for chaining using ACTUAL PLACED positions
+            -- relative_line must be the actual line where content ended up
+            placement_info.last_timing = {
+                relative_line = effective_last_line,  -- ACTUAL placed line
+                new_delay = effective_last_delay,
+                original_distance = source_distance
+            }
         else
-            -- First symbol
-            last_note_line = base_line + last_note_timing.relative_line - 1
+            -- Single track or mode functions not available - use last note timing as before
+            if last_note_timing then
+                local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
+                local distance_delay = last_note_timing.original_distance % 256
+                
+                local last_note_line
+                if last_symbol_timing then
+                    last_note_line = last_note_timing.relative_line
+                else
+                    last_note_line = base_line + last_note_timing.relative_line - 1
+                end
+                
+                placement_info.next_line = last_note_line + distance_in_lines
+                if last_note_timing.new_delay + distance_delay >= 256 then
+                    placement_info.next_line = placement_info.next_line + 1
+                end
+                
+                placement_info.last_timing = last_note_timing
+            end
         end
-        
-        placement_info.next_line = last_note_line + distance_in_lines
-        
-        -- If there's remaining delay, we might need to advance one more line
-        if last_note_timing.new_delay + distance_delay >= 256 then
-            placement_info.next_line = placement_info.next_line + 1
+    else
+        -- Single track symbol - use original logic
+        if last_note_timing then
+            local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
+            local distance_delay = last_note_timing.original_distance % 256
+            
+            local last_note_line
+            if last_symbol_timing then
+                last_note_line = last_note_timing.relative_line
+            else
+                last_note_line = base_line + last_note_timing.relative_line - 1
+            end
+            
+            placement_info.next_line = last_note_line + distance_in_lines
+            if last_note_timing.new_delay + distance_delay >= 256 then
+                placement_info.next_line = placement_info.next_line + 1
+            end
+            
+            placement_info.last_timing = last_note_timing
+            
+            placement_info.last_note_distance = {
+                line = last_note_line,
+                delay = last_note_timing.new_delay,
+                original_distance = last_note_timing.original_distance
+            }
         end
-        
-        -- Store the last timing for next symbol
-        placement_info.last_timing = last_note_timing
-        
-        -- Store the last note's distance information for pattern extension
-        placement_info.last_note_distance = {
-            line = last_note_line,
-            delay = last_note_timing.new_delay,
-            original_distance = last_note_timing.original_distance
-        }
     end
     
     return placement_info
 end
 
--- Phase 5: Calculate placement positions for Independent multi-track mode
+-- Phase 5 Refactor: Calculate placement positions for Independent multi-track mode
 -- Each track is treated independently with its own timing chain
+-- Uses per_track_info from break_set for accurate per-track distance calculations
 local function calculate_independent_placement_positions(break_set, cursor_line, per_track_next_lines, per_track_last_timings, symbol_type)
     local placement_info = {
         notes = {},
@@ -361,6 +576,9 @@ local function calculate_independent_placement_positions(break_set, cursor_line,
         per_track_next_lines = {},
         per_track_last_timings = {}
     }
+    
+    -- Get per_track_info from break_set (captured at selection time)
+    local per_track_info = break_set.per_track_info or {}
     
     -- Group timing entries by track_offset
     local timings_by_track = {}
@@ -379,6 +597,9 @@ local function calculate_independent_placement_positions(break_set, cursor_line,
         -- Get the start line and last timing for this specific track
         local track_start_line = per_track_next_lines[track_offset] or cursor_line
         local track_last_timing = per_track_last_timings[track_offset]
+        
+        -- Get this track's per_track_info for accurate distance
+        local track_info = per_track_info[track_offset]
         
         print("DEBUG: Track offset " .. track_offset .. " - start line: " .. track_start_line .. ", has previous timing: " .. tostring(track_last_timing ~= nil))
         
@@ -408,8 +629,6 @@ local function calculate_independent_placement_positions(break_set, cursor_line,
         
         -- Process each timing entry for this track
         for i, timing in ipairs(current_timings) do
-            local original_timing = track_timings[i]  -- Get original for track_offset
-            
             local target_line
             if track_last_timing then
                 -- Chained - use the adjusted relative position
@@ -449,10 +668,17 @@ local function calculate_independent_placement_positions(break_set, cursor_line,
             track_last_note_timing = timing
         end
         
-        -- Calculate next placement line for this track
+        -- Calculate next placement line for this track using per_track_info
         if track_last_note_timing then
-            local distance_in_lines = math.floor(track_last_note_timing.original_distance / 256)
-            local distance_delay = track_last_note_timing.original_distance % 256
+            -- Use per_track_info distance if available (more accurate)
+            local distance_to_use = track_last_note_timing.original_distance
+            if track_info and track_info.last_note then
+                distance_to_use = track_info.last_note.distance_to_next
+                print("DEBUG: Track " .. track_offset .. " using per_track_info distance: " .. distance_to_use)
+            end
+            
+            local distance_in_lines = math.floor(distance_to_use / 256)
+            local distance_delay = distance_to_use % 256
             
             local last_note_line
             if track_last_timing then
@@ -467,9 +693,14 @@ local function calculate_independent_placement_positions(break_set, cursor_line,
             end
             
             placement_info.per_track_next_lines[track_offset] = next_line_for_track
-            placement_info.per_track_last_timings[track_offset] = track_last_note_timing
+            -- Store timing with the correct distance for chaining
+            placement_info.per_track_last_timings[track_offset] = {
+                relative_line = track_last_note_timing.relative_line,
+                new_delay = track_last_note_timing.new_delay,
+                original_distance = distance_to_use  -- Use per_track_info distance
+            }
             
-            print("DEBUG: Track offset " .. track_offset .. " - last note line: " .. last_note_line .. ", distance: " .. track_last_note_timing.original_distance .. ", next line: " .. next_line_for_track)
+            print("DEBUG: Track offset " .. track_offset .. " - last note line: " .. last_note_line .. ", distance: " .. distance_to_use .. ", next line: " .. next_line_for_track)
         end
     end
     
@@ -1347,7 +1578,445 @@ local function place_multi_column_note_data(line, note_data)
     return placed_columns, overflow_data
 end
 
--- Handle sum overwrite behavior (existing)
+-- ============================================================================
+-- Phase 5: Multi-Track Overwrite Behavior Handlers
+-- These treat the entire multi-track symbol as a single atomic block
+-- ============================================================================
+
+-- Helper: Check if a single line has any content
+local function line_has_any_content(line)
+    -- Check note columns
+    for col = 1, 12 do
+        local nc = line:note_column(col)
+        if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+           nc.instrument_value ~= renoise.PatternLine.EMPTY_INSTRUMENT or
+           nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+           nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+           nc.delay_value ~= 0 or
+           nc.effect_number_value ~= 0 then
+            return true
+        end
+    end
+    -- Check effect columns
+    for col = 1, 8 do
+        local ec = line:effect_column(col)
+        if ec.number_value ~= 0 or ec.amount_value ~= 0 then
+            return true
+        end
+    end
+    return false
+end
+
+-- Helper: Get the full range of a multi-track placement
+local function get_multi_track_placement_range(placement_info, base_track_index)
+    local range = {
+        min_line = math.huge,
+        max_line = 0,
+        tracks = {},  -- track_index -> true
+        track_offsets = {}  -- track_offset -> true
+    }
+    
+    for _, note in ipairs(placement_info.notes) do
+        local track_offset = note.track_offset or 0
+        local target_track = base_track_index + track_offset
+        range.tracks[target_track] = true
+        range.track_offsets[track_offset] = true
+        if note.line < range.min_line then range.min_line = note.line end
+        if note.line > range.max_line then range.max_line = note.line end
+    end
+    
+    -- Include range up to next_line for Replace behavior
+    if placement_info.next_line and placement_info.next_line - 1 > range.max_line then
+        range.max_line = placement_info.next_line - 1
+    end
+    
+    -- Use original_start_line if available
+    if placement_info.original_start_line and placement_info.original_start_line < range.min_line then
+        range.min_line = placement_info.original_start_line
+    end
+    
+    return range
+end
+
+-- Helper: Check if any content exists in the multi-track range
+local function multi_track_range_has_content(range, pattern, song)
+    for track_index, _ in pairs(range.tracks) do
+        if track_index >= 1 and track_index <= #song.tracks then
+            local track = pattern:track(track_index)
+            for line_idx = range.min_line, range.max_line do
+                if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                    if line_has_any_content(track:line(line_idx)) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- Helper: Count entries in a table (for tracks table)
+local function table_count(t)
+    local count = 0
+    for _ in pairs(t) do count = count + 1 end
+    return count
+end
+
+-- Helper: Clear all content in the multi-track range
+local function clear_multi_track_range(range, pattern, song)
+    for track_index, _ in pairs(range.tracks) do
+        if track_index >= 1 and track_index <= #song.tracks then
+            local track = pattern:track(track_index)
+            for line_idx = range.min_line, range.max_line do
+                if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                    track:line(line_idx):clear()
+                end
+            end
+        end
+    end
+    print("DEBUG: Multi-track Replace - cleared lines " .. range.min_line .. " to " .. range.max_line .. " across " .. table_count(range.tracks) .. " tracks")
+end
+
+-- Helper: Check if a specific line/track has content
+local function track_line_has_content(pattern, track_index, line_idx, song)
+    if track_index < 1 or track_index > #song.tracks then
+        return false
+    end
+    if line_idx < 1 or line_idx > pattern.number_of_lines then
+        return false
+    end
+    local track = pattern:track(track_index)
+    return line_has_any_content(track:line(line_idx))
+end
+
+-- Multi-track Sum: No pre-clearing needed, placement handles column finding
+local function handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    print("DEBUG: Multi-track Sum overwrite - no pre-clearing needed")
+    return true
+end
+
+-- Helper: Get the FULL track span (0 to track_count-1) - includes phantom/empty tracks
+local function get_full_track_span(placement_info)
+    local track_offsets = {}
+    local track_count = placement_info.track_count or 1
+    
+    print("DEBUG: get_full_track_span - placement_info.track_count = " .. tostring(placement_info.track_count) .. ", using track_count = " .. track_count)
+    
+    -- Include ALL tracks in the span, from 0 to track_count-1
+    for offset = 0, track_count - 1 do
+        track_offsets[offset] = true
+    end
+    
+    return track_offsets
+end
+
+-- Helper: Get all unique lines used by a placement
+local function get_lines_from_placement(placement_info)
+    local lines = {}
+    for _, note in ipairs(placement_info.notes) do
+        lines[note.line] = true
+    end
+    return lines
+end
+
+-- Helper: Check if ANY track in the symbol's FULL span has content on a specific line
+local function multi_track_line_has_content(pattern, base_track_index, line_idx, track_offsets, song)
+    for track_offset, _ in pairs(track_offsets) do
+        local target_track = base_track_index + track_offset
+        if track_line_has_content(pattern, target_track, line_idx, song) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Helper: Clear a specific line across ALL tracks in the symbol's FULL span
+local function clear_line_across_all_tracks(pattern, base_track_index, line_idx, track_offsets, song)
+    local cleared_count = 0
+    for track_offset, _ in pairs(track_offsets) do
+        local target_track = base_track_index + track_offset
+        if target_track >= 1 and target_track <= #song.tracks then
+            if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                local track = pattern:track(target_track)
+                local line = track:line(line_idx)
+                if line_has_any_content(line) then
+                    cleared_count = cleared_count + 1
+                end
+                line:clear()
+            end
+        end
+    end
+    return cleared_count
+end
+
+-- Helper: Build a map of which lines have content on ANY track in the symbol's FULL span
+-- Returns: table where line_number -> boolean (true if ANY track in span has content)
+local function build_line_content_map(placement_info, base_track_index, pattern, song)
+    local line_content_map = {}
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Get all unique lines used by this symbol
+    local lines_used = get_lines_from_placement(placement_info)
+    
+    -- For each line, check if ANY track in the FULL span has content
+    for line_num, _ in pairs(lines_used) do
+        line_content_map[line_num] = multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song)
+    end
+    
+    return line_content_map
+end
+
+-- Helper: Build a content map for an entire line RANGE (for Intersect behavior)
+-- Checks every line in the range, not just lines where symbol has notes
+local function build_range_content_map(min_line, max_line, base_track_index, track_offsets, pattern, song)
+    local line_content_map = {}
+    
+    for line_num = min_line, max_line do
+        if line_num >= 1 and line_num <= pattern.number_of_lines then
+            line_content_map[line_num] = multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song)
+        end
+    end
+    
+    return line_content_map
+end
+
+-- Multi-track Replace: Clear ALL lines in range across ALL tracks in FULL span, then place all notes
+-- Atomic: treats the entire block as one unit - clears everything before placing
+local function handle_multi_track_replace_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Calculate line range
+    local min_line = placement_info.original_start_line or math.huge
+    local max_line = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line < min_line then min_line = note.line end
+        if note.line > max_line then max_line = note.line end
+    end
+    
+    -- Extend to next_line if available (to include trailing space)
+    if placement_info.next_line and placement_info.next_line - 1 > max_line then
+        max_line = placement_info.next_line - 1
+    end
+    
+    -- Clamp to pattern bounds
+    min_line = math.max(1, min_line)
+    max_line = math.min(pattern.number_of_lines, max_line)
+    
+    -- Clear ALL tracks in the span for ALL lines in the range
+    local total_cleared = 0
+    for line_num = min_line, max_line do
+        total_cleared = total_cleared + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+    end
+    
+    local track_count = table_count(track_offsets)
+    print("DEBUG: Multi-track Replace (atomic) - cleared lines " .. min_line .. " to " .. max_line .. " across " .. track_count .. " tracks (" .. total_cleared .. " lines had content)")
+    return true
+end
+
+-- Multi-track Substitute: For each line with symbol notes, clear that line across ALL tracks in FULL span
+-- Atomic per line: clears holistically but only on lines where symbol has notes
+local function handle_multi_track_substitute_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    local lines_used = get_lines_from_placement(placement_info)
+    
+    -- Clear each line that has symbol notes across ALL tracks in span
+    local total_cleared = 0
+    local lines_cleared = 0
+    for line_num, _ in pairs(lines_used) do
+        if line_num >= 1 and line_num <= pattern.number_of_lines then
+            local cleared = clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            total_cleared = total_cleared + cleared
+            lines_cleared = lines_cleared + 1
+        end
+    end
+    
+    local track_count = table_count(track_offsets)
+    print("DEBUG: Multi-track Substitute (atomic) - cleared " .. lines_cleared .. " lines across " .. track_count .. " tracks (" .. total_cleared .. " lines had content)")
+    return true
+end
+
+-- Multi-track Retain: Skip ALL notes on lines where ANY track in span has content
+-- Atomic per line: if ANY track has content on line N, skip ALL symbol notes destined for line N
+local function handle_multi_track_retain_overwrite(placement_info, base_track_index, pattern, song)
+    -- Build the line content map (checks ALL tracks in symbol span per line)
+    local line_has_content = build_line_content_map(placement_info, base_track_index, pattern, song)
+    
+    -- Filter: keep only notes on lines that have NO content on any track in span
+    local filtered_notes = {}
+    local skipped_lines = {}
+    local kept_lines = {}
+    
+    for _, note in ipairs(placement_info.notes) do
+        if line_has_content[note.line] then
+            -- Skip this note - its line has content on at least one track in the span
+            skipped_lines[note.line] = true
+        else
+            -- Keep this note - no track in the span has content on this line
+            table.insert(filtered_notes, note)
+            kept_lines[note.line] = true
+        end
+    end
+    
+    -- Count unique lines for debug output
+    local skipped_count = table_count(skipped_lines)
+    local kept_count = table_count(kept_lines)
+    
+    placement_info.notes = filtered_notes
+    
+    print("DEBUG: Multi-track Retain (atomic) - kept " .. #filtered_notes .. " notes on " .. kept_count .. " lines, skipped " .. skipped_count .. " lines with conflicts")
+    return true
+end
+
+-- Multi-track Exclude: Clear ALL tracks on conflicting lines AND skip symbol notes on those lines
+-- Atomic per line: if ANY track has content on line N, clear line N on ALL tracks AND skip ALL symbol notes on line N
+local function handle_multi_track_exclude_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Build the line content map (checks ALL tracks in symbol span per line)
+    local line_has_content = build_line_content_map(placement_info, base_track_index, pattern, song)
+    
+    -- First pass: clear ALL tracks on lines that have conflicts
+    local total_cleared = 0
+    local lines_cleared = 0
+    for line_num, has_content in pairs(line_has_content) do
+        if has_content then
+            total_cleared = total_cleared + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            lines_cleared = lines_cleared + 1
+        end
+    end
+    
+    -- Second pass: filter out ALL notes on lines that had content
+    local filtered_notes = {}
+    local excluded_lines = {}
+    local kept_lines = {}
+    
+    for _, note in ipairs(placement_info.notes) do
+        if line_has_content[note.line] then
+            -- Exclude this note - its line had content (now cleared)
+            excluded_lines[note.line] = true
+        else
+            -- Keep this note - no track in the span had content on this line
+            table.insert(filtered_notes, note)
+            kept_lines[note.line] = true
+        end
+    end
+    
+    local excluded_count = table_count(excluded_lines)
+    local kept_count = table_count(kept_lines)
+    
+    placement_info.notes = filtered_notes
+    
+    print("DEBUG: Multi-track Exclude (atomic) - cleared " .. lines_cleared .. " lines, kept " .. #filtered_notes .. " notes on " .. kept_count .. " lines, excluded " .. excluded_count .. " lines with conflicts")
+    return true
+end
+
+-- Multi-track Intersect: If NO conflicts exist, place entire symbol. If conflicts exist, only place on conflicting lines.
+-- Clear non-conflicting existing content within the range.
+-- Atomic per line: conflict detection checks ALL tracks in span for each line
+local function handle_multi_track_intersect_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Step 1: Calculate the full range
+    local min_line = placement_info.original_start_line or math.huge
+    local max_line = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line < min_line then min_line = note.line end
+        if note.line > max_line then max_line = note.line end
+    end
+    
+    -- Extend to next_line if available (to include trailing space)
+    if placement_info.next_line and placement_info.next_line - 1 > max_line then
+        max_line = placement_info.next_line - 1
+    end
+    
+    -- Clamp to pattern bounds
+    min_line = math.max(1, min_line)
+    max_line = math.min(pattern.number_of_lines, max_line)
+    
+    -- Step 2: Find conflicts - lines where BOTH symbol has notes AND existing content exists
+    local conflicts = {}
+    for _, note in ipairs(placement_info.notes) do
+        if note.line >= min_line and note.line <= max_line then
+            -- Check if ANY track in the span has content on this line
+            if multi_track_line_has_content(pattern, base_track_index, note.line, track_offsets, song) then
+                conflicts[note.line] = true
+                print("DEBUG: Intersect found conflict at line " .. note.line)
+            end
+        end
+    end
+    
+    -- Step 3: Clear NON-CONFLICTING existing content within the range (across all tracks)
+    local cleared_count = 0
+    for line_num = min_line, max_line do
+        if not conflicts[line_num] then
+            -- This line has no conflict - clear any existing content
+            if multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song) then
+                cleared_count = cleared_count + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            end
+        end
+    end
+    
+    -- Step 4: Filter notes - place ALL if no conflicts, otherwise only conflicting ones
+    local has_any_conflicts = next(conflicts) ~= nil
+    local filtered_notes = {}
+    local skipped_count = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line >= min_line and note.line <= max_line then
+            if not has_any_conflicts or conflicts[note.line] then
+                -- No conflicts at all, OR this specific line has a conflict - place it
+                table.insert(filtered_notes, note)
+            else
+                -- There are conflicts elsewhere, but not on this line - skip it
+                skipped_count = skipped_count + 1
+            end
+        else
+            skipped_count = skipped_count + 1
+        end
+    end
+    
+    placement_info.notes = filtered_notes
+    
+    local conflict_count = 0
+    for _ in pairs(conflicts) do conflict_count = conflict_count + 1 end
+    
+    print("DEBUG: Multi-track Intersect (atomic) - range " .. min_line .. " to " .. max_line .. 
+          ", conflicts on " .. conflict_count .. " lines, cleared " .. cleared_count .. 
+          " non-conflicting lines, placing " .. #filtered_notes .. " notes, skipped " .. skipped_count)
+    return true
+end
+
+-- Main multi-track overwrite handler - dispatches to specific handler
+local function handle_multi_track_overwrite(placement_info, base_track_index, pattern, song)
+    if not get_overwrite_behavior or not get_overwrite_behavior_constants then
+        -- Fallback to sum behavior
+        return handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    end
+    
+    local overwrite_mode = get_overwrite_behavior()
+    local constants = get_overwrite_behavior_constants()
+    
+    if overwrite_mode == constants.SUM then
+        return handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.REPLACE then
+        return handle_multi_track_replace_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.SUBSTITUTE then
+        return handle_multi_track_substitute_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.RETAIN then
+        return handle_multi_track_retain_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.EXCLUDE then
+        return handle_multi_track_exclude_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.INTERSECT then
+        return handle_multi_track_intersect_overwrite(placement_info, base_track_index, pattern, song)
+    end
+    
+    -- Default: proceed with placement
+    return true
+end
+
+-- Handle sum overwrite behavior (existing - single track)
 local function handle_sum_overwrite(placement_info, track, pattern)
     -- This is the current default behavior - try first column, then additional columns
     -- No special handling needed here since this is implemented in the note placement loop
@@ -2255,29 +2924,49 @@ function editor.place_notes_in_pattern(placement_info, track_index, is_multi_tra
     end
     
     -- UPDATED: Handle overwrite behavior AFTER overflow (so it works on final positions)
-    if get_overwrite_behavior and get_overwrite_behavior_constants then
-        local current_overwrite_behavior = get_overwrite_behavior()
-        local overwrite_constants = get_overwrite_behavior_constants()
-        
-        if current_overwrite_behavior == overwrite_constants.SUM then
-            handle_sum_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.REPLACE then
-            handle_replace_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
-            -- SUBSTITUTE: No clearing at all - column-aware placement handles everything
-        elseif current_overwrite_behavior == overwrite_constants.RETAIN then
-            -- RETAIN: No clearing - let column-aware placement handle conflicts naturally
-        elseif current_overwrite_behavior == overwrite_constants.EXCLUDE then
-            handle_exclude_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.INTERSECT then
-            handle_intersect_overwrite(placement_info, track, pattern)
-        else
-            -- Fall back to sum behavior for unknown options
-            handle_sum_overwrite(placement_info, track, pattern)
+    -- Phase 5: Use separate handlers for multi-track vs single-track
+    if is_multi_track then
+        -- Multi-track: treat entire symbol as atomic block
+        local proceed, skip_reason = handle_multi_track_overwrite(placement_info, track_index, pattern, song)
+        if not proceed then
+            if skip_reason == "substitute_skip" then
+                -- Symbol skipped due to Substitute mode - still update chaining state
+                print("DEBUG: Multi-track Substitute - symbol skipped, returning success for chaining")
+                return true
+            end
+            return false
+        end
+        -- Check if all notes were filtered out (Retain/Exclude/Intersect)
+        if #placement_info.notes == 0 then
+            print("DEBUG: Multi-track overwrite filtered all notes - nothing to place")
+            return true
         end
     else
-        -- Fallback if overwrite behavior functions not available (maintain backward compatibility)
-        handle_sum_overwrite(placement_info, track, pattern)
+        -- Single-track: use existing per-note handlers
+        if get_overwrite_behavior and get_overwrite_behavior_constants then
+            local current_overwrite_behavior = get_overwrite_behavior()
+            local overwrite_constants = get_overwrite_behavior_constants()
+            
+            if current_overwrite_behavior == overwrite_constants.SUM then
+                handle_sum_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.REPLACE then
+                handle_replace_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
+                -- SUBSTITUTE: No clearing at all - column-aware placement handles everything
+            elseif current_overwrite_behavior == overwrite_constants.RETAIN then
+                -- RETAIN: No clearing - let column-aware placement handle conflicts naturally
+            elseif current_overwrite_behavior == overwrite_constants.EXCLUDE then
+                handle_exclude_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.INTERSECT then
+                handle_intersect_overwrite(placement_info, track, pattern)
+            else
+                -- Fall back to sum behavior for unknown options
+                handle_sum_overwrite(placement_info, track, pattern)
+            end
+        else
+            -- Fallback if overwrite behavior functions not available (maintain backward compatibility)
+            handle_sum_overwrite(placement_info, track, pattern)
+        end
     end
     
     -- NEW: Collect all overflow data from multi-column placement

@@ -7,11 +7,31 @@ local get_global_symbol_registry = nil
 local find_next_available_symbols = nil
 local save_global_symbol_registry = nil
 
+-- Phase 5: Multi-track distance mode access (will be set by main.lua)
+local get_multi_track_distance_mode = nil
+local get_multi_track_distance_mode_constants = nil
+
+-- Ignore blank tracks at capture setting (will be set by main.lua)
+local get_ignore_blank_tracks_at_capture = nil
+
 -- Set global symbol registry functions
 function selection.set_global_symbol_functions(get_registry_func, find_symbols_func, save_registry_func)
     get_global_symbol_registry = get_registry_func
     find_next_available_symbols = find_symbols_func
     save_global_symbol_registry = save_registry_func
+end
+
+-- Phase 5: Set multi-track distance mode functions
+function selection.set_multi_track_mode_functions(get_mode_func, get_constants_func)
+    get_multi_track_distance_mode = get_mode_func
+    get_multi_track_distance_mode_constants = get_constants_func
+    print("DEBUG: Multi-track distance mode functions set in selection module")
+end
+
+-- Set ignore blank tracks function
+function selection.set_ignore_blank_tracks_function(func)
+    get_ignore_blank_tracks_at_capture = func
+    print("DEBUG: Ignore blank tracks function set in selection module")
 end
 
 -- Validate that a selection exists and contains notes
@@ -243,239 +263,215 @@ function selection.extract_notes_from_selection()
 end
 
 -- Calculate timing distances between content lines (notes, effects, etc.)
--- Phase 5: Updated to handle multi-track note distances with distance mode support
+-- Phase 5 Refactor: Captures per-track timing info independently (mode-agnostic)
+-- The distance mode (Sync First/Last/Independent) is now applied at PLACEMENT time, not capture time
 function selection.calculate_note_distances(notes, selection_data, pattern)
     print("DEBUG: Calculating content distances for " .. #notes .. " content lines")
     
-    local song = renoise.song()
-    
-    -- Phase 5: Group notes by track for proper distance calculation
-    local notes_by_track = {}
-    for _, note in ipairs(notes) do
-        local track_idx = note.track_index or selection_data.start_track
-        if not notes_by_track[track_idx] then
-            notes_by_track[track_idx] = {}
+    -- Helper function to check if a line has content
+    local function line_has_content(track, line_idx)
+        local line = track:line(line_idx)
+        local has_content = false
+        local delay = 0
+        
+        -- Check note columns for content
+        for col = 1, 12 do
+            local nc = line:note_column(col)
+            if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+               nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+               nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+               nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
+               nc.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                has_content = true
+                delay = nc.delay_value or 0
+                break
+            end
         end
-        table.insert(notes_by_track[track_idx], note)
+        
+        -- Check effect columns if no note content found
+        if not has_content then
+            for col = 1, 8 do
+                local ec = line:effect_column(col)
+                if ec.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                    has_content = true
+                    break
+                end
+            end
+        end
+        
+        return has_content, delay
     end
     
-    -- Phase 5: For multi-track symbols, first find next notes on ALL tracks to determine cutoff
-    local next_note_lines = {}  -- track_idx -> {line = line_number, delay = delay_value} or nil
-    local last_notes_by_track = {}  -- track_idx -> last note in that track
+    -- Group notes by track_offset for proper distance calculation
+    local notes_by_track = {}
+    for _, note in ipairs(notes) do
+        local track_offset = note.track_offset or 0
+        if not notes_by_track[track_offset] then
+            notes_by_track[track_offset] = {}
+        end
+        table.insert(notes_by_track[track_offset], note)
+    end
     
-    if selection_data.is_multi_track and selection_data.track_count > 1 then
-        -- Find the next note AFTER selection on each track
-        for track_idx = selection_data.start_track, selection_data.end_track do
-            local track = pattern:track(track_idx)
+    -- Phase 5 Fix: Find the symbol's absolute start (earliest note across all tracks in ticks)
+    -- This is used to calculate per-track offsets for proper multi-track chaining
+    local symbol_start_tick = nil  -- in ticks (line * 256 + delay)
+    for track_offset, track_notes in pairs(notes_by_track) do
+        if #track_notes > 0 then
+            local first_note = track_notes[1]
+            local tick = (first_note.line - 1) * 256 + (first_note.delay_value or 0)
+            if not symbol_start_tick or tick < symbol_start_tick then
+                symbol_start_tick = tick
+            end
+        end
+    end
+    symbol_start_tick = symbol_start_tick or 0
+    selection_data.symbol_start_tick = symbol_start_tick
+    print("DEBUG: Symbol start tick (earliest note): " .. symbol_start_tick)
+    
+    -- Initialize per_track_info storage (this is the new mode-agnostic data structure)
+    selection_data.per_track_info = {}
+    
+    -- Process each track independently
+    for track_offset, track_notes in pairs(notes_by_track) do
+        local track_idx = selection_data.start_track + track_offset
+        local track = pattern:track(track_idx)
+        
+        print("DEBUG: Processing track_offset " .. track_offset .. " (track " .. track_idx .. ") with " .. #track_notes .. " notes")
+        
+        -- Calculate distances between notes WITHIN this track's captured selection
+        for i = 1, #track_notes do
+            local current_content = track_notes[i]
+            local current_delay = current_content.delay_value or 0
             
-            -- Search for next content beyond the selection
-            for line_idx = selection_data.end_line + 1, pattern.number_of_lines do
-                local line = track:line(line_idx)
-                local line_has_content = false
-                local line_delay = 0
+            -- Look for next content within our extracted notes for this track
+            local next_content = track_notes[i + 1]
+            if next_content then
+                local lines_to_next = next_content.line - current_content.line
+                local next_delay = next_content.delay_value or 0
+                current_content.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
+                print("DEBUG: Track " .. track_offset .. " Note " .. i .. " distance to next in selection: " .. current_content.distance_to_next)
+            end
+        end
+        
+        -- Get the last note in this track
+        local last_note = track_notes[#track_notes]
+        local last_note_absolute_line = last_note.absolute_line
+        local last_note_delay = last_note.delay_value or 0
+        
+        -- Phase 5 Fix: Get the first note in this track and calculate offset from symbol start
+        local first_note = track_notes[1]
+        local first_note_delay = first_note.delay_value or 0
+        local first_note_tick = (first_note.line - 1) * 256 + first_note_delay
+        local offset_from_symbol_start = first_note_tick - symbol_start_tick
+        print("DEBUG: Track " .. track_offset .. " first note at line " .. first_note.line .. 
+              ", delay " .. first_note_delay .. ", offset from symbol start: " .. offset_from_symbol_start .. " ticks")
+        
+        -- Find this track's next note AFTER the selection (always, regardless of mode)
+        local next_note_info = nil
+        for line_idx = selection_data.end_line + 1, pattern.number_of_lines do
+            local has_content, delay = line_has_content(track, line_idx)
+            if has_content then
+                next_note_info = { line = line_idx, delay = delay }
+                print("DEBUG: Track " .. track_offset .. " next note after selection found at line " .. line_idx .. " delay " .. delay)
+                break
+            end
+        end
+        
+        -- If no next note found, use pattern end + 1
+        if not next_note_info then
+            next_note_info = { line = pattern.number_of_lines + 1, delay = 0 }
+            print("DEBUG: Track " .. track_offset .. " no next note after selection, using pattern end + 1")
+        end
+        
+        -- Calculate this track's distance_to_next for its last note
+        local distance_to_next = ((next_note_info.line - last_note_absolute_line) * 256) 
+                                 - last_note_delay + next_note_info.delay
+        last_note.distance_to_next = distance_to_next
+        print("DEBUG: Track " .. track_offset .. " last note distance_to_next: " .. distance_to_next)
+        
+        -- Store per-track info (mode-agnostic - all raw data preserved)
+        -- Phase 5 Fix: Added first_note with offset_from_symbol_start for proper multi-track chaining
+        selection_data.per_track_info[track_offset] = {
+            first_note = {
+                line = first_note.line,                       -- Relative line within selection
+                delay = first_note_delay,
+                offset_from_symbol_start = offset_from_symbol_start  -- Ticks from symbol start (for chaining)
+            },
+            last_note = {
+                line = last_note.line,                    -- Relative line within selection
+                absolute_line = last_note_absolute_line,  -- Absolute line in pattern
+                delay = last_note_delay,
+                distance_to_next = distance_to_next       -- This track's own distance
+            },
+            next_note = {
+                line = next_note_info.line,
+                delay = next_note_info.delay
+            },
+            note_count = #track_notes
+        }
+    end
+    
+    -- Check if we should handle empty tracks (when ignore blank tracks is disabled)
+    local ignore_blank = false  -- Default to NOT ignoring blank tracks (include phantom entries)
+    if get_ignore_blank_tracks_at_capture then
+        ignore_blank = get_ignore_blank_tracks_at_capture()
+    end
+    
+    -- If not ignoring blank tracks, create phantom entries for empty tracks
+    if not ignore_blank then
+        for track_offset = 0, (selection_data.track_count - 1) do
+            -- Skip if we already processed this track (has notes)
+            if not selection_data.per_track_info[track_offset] then
+                local track_idx = selection_data.start_track + track_offset
+                local track = pattern:track(track_idx)
                 
-                -- Check note columns for content
-                for col = 1, 12 do
-                    local nc = line:note_column(col)
-                    if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
-                       nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
-                       nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
-                       nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
-                       nc.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
-                        line_has_content = true
-                        line_delay = nc.delay_value or 0
+                print("DEBUG: Track " .. track_offset .. " is empty, creating phantom note entry")
+                
+                -- Find next note after selection for this empty track
+                local next_note_info = nil
+                for line_idx = selection_data.end_line + 1, pattern.number_of_lines do
+                    local has_content, delay = line_has_content(track, line_idx)
+                    if has_content then
+                        next_note_info = { line = line_idx, delay = delay }
+                        print("DEBUG: Track " .. track_offset .. " (empty) next note found at line " .. line_idx)
                         break
                     end
                 end
                 
-                -- Check effect columns if no note content found
-                if not line_has_content then
-                    for col = 1, 8 do
-                        local ec = line:effect_column(col)
-                        if ec.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
-                            line_has_content = true
-                            break
-                        end
-                    end
+                -- If no next note found, use pattern end + 1
+                if not next_note_info then
+                    next_note_info = { line = pattern.number_of_lines + 1, delay = 0 }
+                    print("DEBUG: Track " .. track_offset .. " (empty) no next note, using pattern end + 1")
                 end
                 
-                if line_has_content then
-                    next_note_lines[track_idx] = { line = line_idx, delay = line_delay }
-                    print("DEBUG: Track " .. track_idx .. " next note found at line " .. line_idx)
-                    break
-                end
-            end
-            
-            if not next_note_lines[track_idx] then
-                -- No next note found, use end of pattern + 1
-                next_note_lines[track_idx] = { line = pattern.number_of_lines + 1, delay = 0 }
-                print("DEBUG: Track " .. track_idx .. " no next note, using pattern end + 1")
-            end
-        end
-        
-        -- Determine unified cutoff based on distance mode
-        local unified_cutoff = selection.get_unified_cutoff(next_note_lines, selection_data)
-        if unified_cutoff then
-            print("DEBUG: Unified cutoff line: " .. unified_cutoff.line .. " (from track " .. unified_cutoff.source_track .. ")")
-        end
-        
-        -- Store unified cutoff for use in distance calculation
-        selection_data.unified_cutoff = unified_cutoff
-    end
-    
-    -- Calculate distances within each track
-    for track_idx, track_notes in pairs(notes_by_track) do
-        local track = pattern:track(track_idx)
-        
-        for i = 1, #track_notes do
-            local current_content = track_notes[i]
-            local current_delay = current_content.delay_value
-            local found_next = false
-            
-            -- Look for next content within our extracted notes for this track
-            for j = i + 1, #track_notes do
-                local next_content = track_notes[j]
-                local lines_to_next = next_content.line - current_content.line
-                local next_delay = next_content.delay_value
-                current_content.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
-                found_next = true
-                print("DEBUG: Track " .. track_idx .. " Content " .. i .. " (" .. current_content.content_type .. ") distance to next: " .. current_content.distance_to_next)
-                break
-            end
-            
-            -- If this is the last note in this track
-            if not found_next then
-                last_notes_by_track[track_idx] = current_content
-                local current_absolute_line = current_content.absolute_line
+                -- Create phantom note at line 1 (relative) with delay 0
+                local phantom_absolute_line = selection_data.start_line
+                local distance_to_next = ((next_note_info.line - phantom_absolute_line) * 256) + next_note_info.delay
                 
-                -- Phase 5: For multi-track with unified cutoff, use that
-                if selection_data.unified_cutoff and selection_data.is_multi_track then
-                    local cutoff = selection_data.unified_cutoff
-                    local lines_to_cutoff = cutoff.line - current_absolute_line
-                    current_content.distance_to_next = (lines_to_cutoff * 256) - current_delay + cutoff.delay
-                    print("DEBUG: Track " .. track_idx .. " Last content using unified cutoff at line " .. cutoff.line .. ", distance: " .. current_content.distance_to_next)
-                else
-                    -- Single track or Independent mode: use original per-track logic
-                    print("DEBUG: Track " .. track_idx .. " Looking for next content after absolute line " .. current_absolute_line .. " in full pattern")
-                    
-                    -- Search for the next content beyond the selection in the entire pattern
-                    for line_idx = selection_data.end_line + 1, pattern.number_of_lines do
-                        local line = track:line(line_idx)
-                        local line_has_content = false
-                        
-                        -- Check note columns for content
-                        for col = 1, 12 do
-                            local nc = line:note_column(col)
-                            if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
-                               nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
-                               nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
-                               nc.delay_value ~= renoise.PatternLine.EMPTY_DELAY or
-                               nc.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
-                                line_has_content = true
-                                break
-                            end
-                        end
-                        
-                        -- Check effect columns for content if no note content found
-                        if not line_has_content then
-                            for col = 1, 8 do
-                                local ec = line:effect_column(col)
-                                if ec.number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
-                                    line_has_content = true
-                                    break
-                                end
-                            end
-                        end
-                        
-                        if line_has_content then
-                            local lines_to_next = line_idx - current_absolute_line
-                            local next_delay = line:note_column(1).delay_value
-                            current_content.distance_to_next = (lines_to_next * 256) - current_delay + next_delay
-                            found_next = true
-                            print("DEBUG: Track " .. track_idx .. " Last content " .. i .. " distance to next content at line " .. line_idx .. ": " .. current_content.distance_to_next)
-                            break
-                        end
-                    end
-                    
-                    -- If still no next content found, calculate distance to end of pattern
-                    if not found_next then
-                        local lines_to_end = (pattern.number_of_lines + 1) - current_absolute_line
-                        current_content.distance_to_next = (lines_to_end * 256) - current_delay
-                        print("DEBUG: Track " .. track_idx .. " Last content " .. i .. " distance to end of pattern: " .. current_content.distance_to_next)
-                    end
-                end
+                -- Phase 5 Fix: Phantom tracks have offset 0 from symbol start (they start at the symbol's beginning)
+                selection_data.per_track_info[track_offset] = {
+                    first_note = {
+                        line = 1,                               -- Phantom note at relative line 1
+                        delay = 0,
+                        offset_from_symbol_start = 0            -- Phantom starts at symbol start
+                    },
+                    last_note = {
+                        line = 1,                           -- Phantom note at relative line 1
+                        absolute_line = phantom_absolute_line,
+                        delay = 0,
+                        distance_to_next = distance_to_next
+                    },
+                    next_note = next_note_info,
+                    note_count = 0,                         -- Flag indicating empty track
+                    is_phantom = true                       -- Explicit flag for phantom entry
+                }
+                
+                print("DEBUG: Track " .. track_offset .. " phantom note distance_to_next: " .. distance_to_next)
             end
         end
     end
-end
-
--- Phase 5: Determine unified cutoff point based on multi-track distance mode
-function selection.get_unified_cutoff(next_note_lines, selection_data)
-    -- Get the distance mode from main module
-    local get_mode = _G.get_multi_track_distance_mode
-    local get_constants = _G.get_multi_track_distance_mode_constants
     
-    if not get_mode or not get_constants then
-        print("DEBUG: Multi-track distance mode functions not available, using independent mode")
-        return nil
-    end
-    
-    local mode = get_mode()
-    local constants = get_constants()
-    
-    if mode == constants.INDEPENDENT then
-        -- Independent mode - no unified cutoff
-        print("DEBUG: Multi-track distance mode: Independent - no unified cutoff")
-        return nil
-    end
-    
-    -- Find earliest and latest next notes across all tracks
-    local earliest_line = nil
-    local earliest_track = nil
-    local earliest_delay = 0
-    local latest_line = nil
-    local latest_track = nil
-    local latest_delay = 0
-    
-    for track_idx, next_info in pairs(next_note_lines) do
-        local line = next_info.line
-        local delay = next_info.delay or 0
-        
-        -- Compare using tick position (line * 256 + delay)
-        local tick_pos = line * 256 + delay
-        
-        if not earliest_line or tick_pos < (earliest_line * 256 + earliest_delay) then
-            earliest_line = line
-            earliest_track = track_idx
-            earliest_delay = delay
-        end
-        
-        if not latest_line or tick_pos > (latest_line * 256 + latest_delay) then
-            latest_line = line
-            latest_track = track_idx
-            latest_delay = delay
-        end
-    end
-    
-    if mode == constants.SYNC_FIRST then
-        -- Sync to First: use earliest (shortest distance to next note)
-        print("DEBUG: Multi-track distance mode: Sync to First - cutoff at line " .. earliest_line .. " (track " .. earliest_track .. ")")
-        return {
-            line = earliest_line,
-            delay = earliest_delay,
-            source_track = earliest_track
-        }
-    elseif mode == constants.SYNC_LAST then
-        -- Sync to Last: use latest (longest distance)
-        print("DEBUG: Multi-track distance mode: Sync to Last - cutoff at line " .. latest_line .. " (track " .. latest_track .. ")")
-        return {
-            line = latest_line,
-            delay = latest_delay,
-            source_track = latest_track
-        }
-    end
-    
-    return nil
+    print("DEBUG: Per-track info captured for " .. selection_data.track_count .. " tracks")
 end
 
 -- Apply labels from BreakFast labeler data to a range symbol
@@ -557,7 +553,7 @@ function selection.create_symbol_data(notes, selection_data)
     local total_duration = 0
     if #notes > 0 then
         local last_note = notes[#notes]
-        total_duration = (last_note.line - 1) * 256 + last_note.delay_value + last_note.distance_to_next
+        total_duration = (last_note.line - 1) * 256 + (last_note.delay_value or 0) + (last_note.distance_to_next or 0)
     end
     
     -- Phase 5: Get track names for the selection
@@ -579,19 +575,33 @@ function selection.create_symbol_data(notes, selection_data)
         track_count = selection_data.track_count,
         first_track_index = selection_data.first_track_index,
         track_names = track_names,
-        is_multi_track = selection_data.is_multi_track
+        is_multi_track = selection_data.is_multi_track,
+        -- Phase 5 Refactor: Per-track timing info (mode-agnostic, for placement-time interpretation)
+        per_track_info = selection_data.per_track_info or {},
+        -- Phase 5 Fix: Symbol start tick for multi-track chaining
+        symbol_start_tick = selection_data.symbol_start_tick or 0
     }
     
     print("DEBUG: Created symbol data with " .. #notes .. " notes across " .. selection_data.track_count .. " tracks, total duration: " .. total_duration)
     if selection_data.is_multi_track then
         print("DEBUG: Multi-track symbol - tracks: " .. table.concat(track_names, ", "))
+        print("DEBUG: Symbol start tick: " .. (selection_data.symbol_start_tick or 0))
+        if selection_data.per_track_info then
+            for track_offset, info in pairs(selection_data.per_track_info) do
+                local first_note_offset = info.first_note and info.first_note.offset_from_symbol_start or 0
+                print("DEBUG: Track " .. track_offset .. " - first note offset: " .. first_note_offset ..
+                      ", last note line: " .. info.last_note.line .. 
+                      ", distance_to_next: " .. info.last_note.distance_to_next ..
+                      ", next note at line: " .. info.next_note.line)
+            end
+        end
     end
     return symbol_data
 end
 
 -- Convert range symbol to break_set format for compatibility with placement system
 -- Phase 5: Now includes track information in timing entries
--- FIXED: Now normalizes delays like breakpoints.lua - first note gets delay 0, others adjusted relative
+-- Phase 5 Refactor: Includes per_track_info for placement-time mode interpretation
 function selection.convert_to_break_set(symbol_data)
     local break_set = {
         timing = {},
@@ -602,15 +612,27 @@ function selection.convert_to_break_set(symbol_data)
         track_count = symbol_data.track_count or 1,
         first_track_index = symbol_data.first_track_index or 1,
         track_names = symbol_data.track_names or {},
-        is_multi_track = symbol_data.is_multi_track or false
+        is_multi_track = symbol_data.is_multi_track or false,
+        -- Phase 5 Refactor: Per-track timing info (mode-agnostic, for placement-time interpretation)
+        per_track_info = symbol_data.per_track_info or {},
+        -- Phase 5 Fix: Symbol start tick for multi-track chaining calculations
+        symbol_start_tick = symbol_data.symbol_start_tick or 0
     }
+    
+    local is_multi_track = symbol_data.is_multi_track or false
     
     -- Get delay adjustment from first note (to normalize so first note has delay 0)
     -- This matches how breakpoints.lua handles timing normalization
+    -- Phase 5 Refactor: For multi-track symbols, DON'T normalize delays globally
+    -- Each track needs to maintain its own delay values for accurate placement
     local delay_adjustment = 0
     local base_line = 1
     if #symbol_data.notes > 0 then
-        delay_adjustment = symbol_data.notes[1].delay_value or 0
+        if not is_multi_track then
+            -- Single track: normalize delays as before
+            delay_adjustment = symbol_data.notes[1].delay_value or 0
+        end
+        -- For multi-track: delay_adjustment stays 0, preserving original delays
         base_line = symbol_data.notes[1].line or 1
     end
     
@@ -639,12 +661,16 @@ function selection.convert_to_break_set(symbol_data)
         local relative_line = content.line
         local adjusted_distance = content.distance_to_next
         
-        if i == 1 then
-            -- First note: delay becomes 0, distance increases by delay_adjustment
+        if is_multi_track then
+            -- Multi-track: preserve original delays exactly as captured
+            -- No normalization - each note keeps its original delay value
+            normalized_delay = content.delay_value or 0
+        elseif i == 1 then
+            -- Single-track first note: delay becomes 0, distance increases by delay_adjustment
             normalized_delay = 0
             adjusted_distance = content.distance_to_next + delay_adjustment
         else
-            -- Subsequent notes: subtract delay_adjustment from delay
+            -- Single-track subsequent notes: subtract delay_adjustment from delay
             normalized_delay = content.delay_value - delay_adjustment
             
             -- Handle negative delay by moving to previous line
