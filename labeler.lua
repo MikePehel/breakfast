@@ -180,13 +180,13 @@ local function slice_preview_timer_callback()
     end
 end
 
--- Update preview button visual (â–¸ when stopped, â–  when playing)
+-- Update preview button visual (> when stopped, [] when playing)
 local function update_preview_button(button_id, dialog_vb, is_playing)
     if not dialog_vb then return end
     
     local button = dialog_vb.views[button_id]
     if button then
-        button.text = is_playing and "â– " or "â–¸"
+        button.text = is_playing and "[]" or ">"
     end
 end
 
@@ -1115,13 +1115,16 @@ function labeler.show_dialog()
         -- Create preview button ID
         local preview_button_id = "preview_" .. i
         
+        -- Check if this is the SRC (root) sample - labels are disabled for SRC
+        local is_src_sample = (mapping.hex_key == "00")
+        
         local row_elements = {
-            -- Preview button (Phase 6)
+            -- Preview button (Phase 6) - always enabled, even for SRC
             dialog_vb:button {
                 id = preview_button_id,
-                text = "â–¸",
+                text = ">",
                 width = preview_column_width,
-                tooltip = "Preview this slice",
+                tooltip = is_src_sample and "Preview full sample" or "Preview this slice",
                 notifier = function()
                     labeler.toggle_slice_preview(
                         current_instrument_index,
@@ -1136,7 +1139,8 @@ function labeler.show_dialog()
             dialog_vb:text { 
                 text = mapping.display_note, 
                 width = narrow_column, 
-                align = "center" 
+                align = "center",
+                style = is_src_sample and "disabled" or "normal"
             },
             
             -- Sample name (truncated)
@@ -1144,101 +1148,180 @@ function labeler.show_dialog()
                 text = mapping.sample_name:sub(1, 15), 
                 width = column_width, 
                 align = "left",
-                tooltip = mapping.sample_name
-            },
-            
-            -- Label dropdown
-            dialog_vb:popup {
+                tooltip = mapping.sample_name,
+                style = is_src_sample and "disabled" or "normal"
+            }
+        }
+        
+        -- Label dropdown or disabled text for SRC
+        if is_src_sample then
+            -- SRC sample: show disabled text instead of dropdown
+            table.insert(row_elements, dialog_vb:text {
+                text = "(no labels)",
+                width = column_width,
+                align = "center",
+                style = "disabled"
+            })
+        else
+            -- Regular slice: show label dropdown
+            table.insert(row_elements, dialog_vb:popup {
                 id = "label_" .. i,
                 items = label_options,
                 width = column_width,
                 value = table.find(label_options, mapping.label) or 1
-            }
-        }
+            })
+        end
         
         -- Spacer for Label 2 toggle button alignment
         table.insert(row_elements, dialog_vb:space { width = 25 })
         
         if show_label2 then
-            -- Label 2 dropdown
-            table.insert(row_elements, dialog_vb:popup {
-                id = "label2_" .. i,
-                items = label_options,
-                width = column_width,
-                value = table.find(label_options, mapping.label2) or 1
-            })
+            if is_src_sample then
+                -- SRC sample: show disabled text instead of dropdown
+                table.insert(row_elements, dialog_vb:text {
+                    text = "---",
+                    width = column_width,
+                    align = "center",
+                    style = "disabled"
+                })
+            else
+                -- Regular slice: show Label 2 dropdown
+                table.insert(row_elements, dialog_vb:popup {
+                    id = "label2_" .. i,
+                    items = label_options,
+                    width = column_width,
+                    value = table.find(label_options, mapping.label2) or 1
+                })
+            end
         end
         
-        -- Breakpoint checkbox
-        table.insert(row_elements, dialog_vb:horizontal_aligner {
-            mode = "center",
-            width = 70,
-            dialog_vb:checkbox {
-                id = "breakpoint_" .. i,
-                value = mapping.breakpoint,
-                notifier = function(value)
-                    -- Count current breakpoints
-                    local current_count = 0
-                    for j = 1, #mapping_data do
-                        local other_checkbox = dialog_vb.views["breakpoint_" .. j]
-                        if other_checkbox and other_checkbox.value then
-                            current_count = current_count + 1
+        -- Breakpoint checkbox or disabled placeholder for SRC
+        if is_src_sample then
+            -- SRC sample: show disabled placeholder
+            table.insert(row_elements, dialog_vb:horizontal_aligner {
+                mode = "center",
+                width = 70,
+                dialog_vb:text {
+                    text = "---",
+                    style = "disabled"
+                }
+            })
+        else
+            -- Regular slice: show breakpoint checkbox
+            table.insert(row_elements, dialog_vb:horizontal_aligner {
+                mode = "center",
+                width = 70,
+                dialog_vb:checkbox {
+                    id = "breakpoint_" .. i,
+                    value = mapping.breakpoint,
+                    notifier = function(value)
+                        -- Count current breakpoints (exclude SRC samples)
+                        local current_count = 0
+                        for j = 1, #mapping_data do
+                            if mapping_data[j].hex_key ~= "00" then
+                                local other_checkbox = dialog_vb.views["breakpoint_" .. j]
+                                if other_checkbox and other_checkbox.value then
+                                    current_count = current_count + 1
+                                end
+                            end
+                        end
+                        
+                        -- Limit to 5 breakpoints (6 sections maximum)
+                        if value and current_count > 5 then
+                            dialog_vb.views["breakpoint_" .. i].value = false
+                            renoise.app():show_warning(
+                                "Maximum 5 breakpoints allowed (creates 6 sections)."
+                            )
                         end
                     end
-                    
-                    -- Limit to 5 breakpoints (6 sections maximum)
-                    if value and current_count > 5 then
-                        dialog_vb.views["breakpoint_" .. i].value = false
-                        renoise.app():show_warning(
-                            "Maximum 5 breakpoints allowed (creates 6 sections)."
-                        )
-                    end
-                end
-            }
-        })
+                }
+            })
+        end
         
         -- Spacer for Advanced Data toggle button alignment
         table.insert(row_elements, dialog_vb:space { width = 50 })
         
         -- Advanced Data fields (when enabled)
         if show_advanced_data then
-            -- Location dropdown
-            table.insert(row_elements, dialog_vb:popup {
-                id = "location_" .. i,
-                items = labeler.location_options,
-                width = location_column_width,
-                value = table.find(labeler.location_options, mapping.location) or 1
-            })
-            
-            -- Ghost checkbox
-            table.insert(row_elements, dialog_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                dialog_vb:checkbox {
-                    id = "ghost_" .. i,
-                    value = mapping.ghost
-                }
-            })
-            
-            -- Counterstroke checkbox
-            table.insert(row_elements, dialog_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                dialog_vb:checkbox {
-                    id = "counterstroke_" .. i,
-                    value = mapping.counterstroke
-                }
-            })
-            
-            -- Cycle checkbox
-            table.insert(row_elements, dialog_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                dialog_vb:checkbox {
-                    id = "cycle_" .. i,
-                    value = mapping.cycle
-                }
-            })
+            if is_src_sample then
+                -- SRC sample: show disabled placeholders for all advanced data fields
+                -- Location placeholder
+                table.insert(row_elements, dialog_vb:text {
+                    text = "---",
+                    width = location_column_width,
+                    align = "center",
+                    style = "disabled"
+                })
+                
+                -- Ghost placeholder
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:text {
+                        text = "---",
+                        style = "disabled"
+                    }
+                })
+                
+                -- Counterstroke placeholder
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:text {
+                        text = "---",
+                        style = "disabled"
+                    }
+                })
+                
+                -- Cycle placeholder
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:text {
+                        text = "---",
+                        style = "disabled"
+                    }
+                })
+            else
+                -- Regular slice: show all advanced data controls
+                -- Location dropdown
+                table.insert(row_elements, dialog_vb:popup {
+                    id = "location_" .. i,
+                    items = labeler.location_options,
+                    width = location_column_width,
+                    value = table.find(labeler.location_options, mapping.location) or 1
+                })
+                
+                -- Ghost checkbox
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:checkbox {
+                        id = "ghost_" .. i,
+                        value = mapping.ghost
+                    }
+                })
+                
+                -- Counterstroke checkbox
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:checkbox {
+                        id = "counterstroke_" .. i,
+                        value = mapping.counterstroke
+                    }
+                })
+                
+                -- Cycle checkbox
+                table.insert(row_elements, dialog_vb:horizontal_aligner {
+                    mode = "center",
+                    width = checkbox_column_width,
+                    dialog_vb:checkbox {
+                        id = "cycle_" .. i,
+                        value = mapping.cycle
+                    }
+                })
+            end
         end
         
         local row = dialog_vb:row {
@@ -1273,9 +1356,19 @@ function labeler.show_dialog()
                     local current_show_advanced_data = get_show_advanced_data and get_show_advanced_data() or false
 
                     for i, mapping in ipairs(mapping_data) do
+                        -- Skip SRC (root) sample - it cannot have labels assigned
+                        if mapping.hex_key == "00" then
+                            goto continue_save_loop
+                        end
+                        
                         local label_popup = dialog_vb.views["label_" .. i]
                         local label2_popup = dialog_vb.views["label2_" .. i]
                         local breakpoint_field = dialog_vb.views["breakpoint_" .. i]
+                        
+                        -- Skip if controls don't exist (safety check)
+                        if not label_popup or not breakpoint_field then
+                            goto continue_save_loop
+                        end
                         
                         local label2_value = "---------"
                         if current_show_label2 and label2_popup then
@@ -1326,6 +1419,8 @@ function labeler.show_dialog()
                             counterstroke = counterstroke_value,
                             cycle = cycle_value
                         }
+                        
+                        ::continue_save_loop::
                     end
                     
                     -- Store labels for current instrument
