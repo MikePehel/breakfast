@@ -99,6 +99,9 @@ local expanded_symbol = nil          -- Track which symbol is currently expanded
 -- Phase 4: Dictionary view state
 local dictionary_view_enabled = false  -- Toggle state for dictionary view button (default off)
 
+-- Symbol labeler view state
+local label_view_enabled = false  -- Toggle state for label view button (default off)
+
 -- Phase 4: Symbol Dictionaries data structure
 -- symbol_dictionaries[dict_name] = {
 --     name = string,
@@ -998,13 +1001,13 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
+    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
+    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡
+    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“
+    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
+    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -1322,6 +1325,24 @@ function toggle_dictionary_view_ui(vb)
     end
     
     print("DEBUG: Dictionary view toggled to " .. (dictionary_view_enabled and "enabled" or "disabled"))
+end
+
+-- Toggle label view and refresh dialog
+function toggle_label_view(vb)
+    label_view_enabled = not label_view_enabled
+    
+    -- Update toggle button text
+    if vb.views.label_toggle then
+        vb.views.label_toggle.text = label_view_enabled and "Label*" or "Label"
+    end
+    
+    -- Refresh dialog to rebuild with new view state
+    if dialog and dialog.visible then
+        dialog:close()
+        show_main_dialog()
+    end
+    
+    print("DEBUG: Label view toggled to " .. (label_view_enabled and "enabled" or "disabled"))
 end
 
 -- Expand a symbol to show detailed info (collapse others)
@@ -2237,7 +2258,7 @@ function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
             -- Phase 6: Preview button
             capture_vb:button {
                 id = preview_button_id,
-                text = "Ã¢â€“Â¸",
+                text = "ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¸",
                 width = preview_column_width,
                 tooltip = "Preview this note",
                 notifier = function()
@@ -2945,7 +2966,8 @@ function export_global_alphabet_csv()
     
     -- Write CSV header - expanded to include content type and enhanced content detection
     -- Phase 4: Added Dictionary column
-    file:write("Symbol,Dictionary,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalDistance,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
+    -- Updated: Added OriginalLine, OriginalDelay, and TimingBreakpoint for complete timing data
+    file:write("Symbol,Dictionary,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalLine,OriginalDelay,OriginalDistance,TimingBreakpoint,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
 
     -- Write data for each symbol
     for symbol, symbol_data in pairs(global_symbol_registry) do
@@ -3094,7 +3116,10 @@ function export_global_alphabet_csv()
                     tostring(is_breakpoint),
                     timing.relative_line or "",
                     timing.new_delay or "",
+                    timing.original_line or "",
+                    timing.original_delay or "",
                     timing.original_distance or "",
+                    tostring(timing.breakpoint or false),  -- Per-timing breakpoint marker
                     note_value or "",
                     timing.volume_value or "",
                     timing.panning_value or "",
@@ -3224,8 +3249,11 @@ function export_global_alphabet_json()
                     slice_index = actual_slice_index,
                     label = label_data.label or "",
                     breakpoint = label_data.breakpoint or false,
+                    timing_breakpoint = timing.breakpoint or false,  -- Per-timing breakpoint marker
                     timing_line = timing.relative_line or 1,
                     timing_delay = timing.new_delay or 0,
+                    original_line = timing.original_line,
+                    original_delay = timing.original_delay,
                     original_distance = timing.original_distance or 256,
                     source_instrument_index = actual_instrument_value,
                     -- NEW: Enhanced content information
@@ -3264,8 +3292,11 @@ function export_global_alphabet_json()
                     instrument_value = timing.instrument_value or 0,
                     relative_line = timing.relative_line or 1,
                     new_delay = timing.new_delay or 0,
+                    original_line = timing.original_line,
+                    original_delay = timing.original_delay,
                     original_distance = timing.original_distance or 256,
                     source_instrument_index = timing.source_instrument_index or instrument_index,
+                    breakpoint = timing.breakpoint or false,  -- Per-timing breakpoint marker
                     note_value = timing.note_value,
                     volume_value = timing.volume_value,
                     panning_value = timing.panning_value,
@@ -3423,9 +3454,11 @@ function import_global_alphabet_csv()
     
     -- Updated expected columns to include content type fields, all 8 effect columns, and all 12 note columns
     -- Phase 4: Added dictionary column
+    -- Updated: Added originalline, originaldelay, and timingbreakpoint for complete timing data
     local expected_columns = {
-        "symbol", "dictionary", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", 
-        "timingline", "timingdelay", "originaldistance", "notevalue", "volumevalue", "panningvalue", 
+        "symbol", "dictionary", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", "isbreakpoint",
+        "timingline", "timingdelay", "originalline", "originaldelay", "originaldistance", "timingbreakpoint",
+        "notevalue", "volumevalue", "panningvalue", 
         "effectnumber", "effectamount", "hasnote", "contenttype",
         "effectcolumn1number", "effectcolumn1amount", "effectcolumn2number", "effectcolumn2amount",
         "effectcolumn3number", "effectcolumn3amount", "effectcolumn4number", "effectcolumn4amount",
@@ -3508,6 +3541,14 @@ function import_global_alphabet_csv()
                 local is_breakpoint_str = unescape_csv_field(fields[column_positions.isbreakpoint] or "false"):lower()
                 local timing_line = tonumber(unescape_csv_field(fields[column_positions.timingline] or "1"))
                 local timing_delay = tonumber(unescape_csv_field(fields[column_positions.timingdelay] or "0"))
+                local original_line = nil
+                if column_positions.originalline and fields[column_positions.originalline] and fields[column_positions.originalline] ~= "" then
+                    original_line = tonumber(unescape_csv_field(fields[column_positions.originalline]))
+                end
+                local original_delay = nil
+                if column_positions.originaldelay and fields[column_positions.originaldelay] and fields[column_positions.originaldelay] ~= "" then
+                    original_delay = tonumber(unescape_csv_field(fields[column_positions.originaldelay]))
+                end
                 local original_distance = tonumber(unescape_csv_field(fields[column_positions.originaldistance] or "256"))
                 
                 -- Extract new fields with fallbacks
@@ -3545,6 +3586,12 @@ function import_global_alphabet_csv()
                 local content_type = "note"  -- Default for backward compatibility
                 if column_positions.contenttype and fields[column_positions.contenttype] and fields[column_positions.contenttype] ~= "" then
                     content_type = unescape_csv_field(fields[column_positions.contenttype])
+                end
+                
+                -- Extract per-timing breakpoint marker
+                local timing_breakpoint = false
+                if column_positions.timingbreakpoint and fields[column_positions.timingbreakpoint] and fields[column_positions.timingbreakpoint] ~= "" then
+                    timing_breakpoint = (unescape_csv_field(fields[column_positions.timingbreakpoint]):lower() == "true")
                 end
                 
                 -- Extract all 8 effect columns data
@@ -3637,6 +3684,8 @@ function import_global_alphabet_csv()
                         instrument_value = slice_index,
                         relative_line = timing_line,
                         new_delay = timing_delay,
+                        original_line = original_line,
+                        original_delay = original_delay,
                         original_distance = original_distance,
                         source_instrument_index = instrument_index
                     }
@@ -3670,6 +3719,7 @@ function import_global_alphabet_csv()
                     -- Add enhanced content information
                     timing_entry.has_note = has_note
                     timing_entry.content_type = content_type
+                    timing_entry.breakpoint = timing_breakpoint  -- Per-timing breakpoint marker
                     
                     -- Add effect columns data if present
                     if next(effect_columns_data) ~= nil then
@@ -3966,6 +4016,8 @@ function import_global_alphabet_json()
                                 instrument_value = slice_index,
                                 relative_line = timing_line,
                                 new_delay = timing_delay,
+                                original_line = entry.original_line,
+                                original_delay = entry.original_delay,
                                 original_distance = original_distance,
                                 source_instrument_index = source_instrument_index
                             }
@@ -4012,6 +4064,7 @@ function import_global_alphabet_json()
                             -- Add enhanced content information
                             timing_entry.has_note = entry.has_note or false
                             timing_entry.content_type = entry.content_type or "note"
+                            timing_entry.breakpoint = entry.breakpoint or entry.timing_breakpoint or false  -- Per-timing breakpoint marker
                             
                             -- Phase 5: Add multi-track information
                             if entry.track_index then
@@ -4838,6 +4891,7 @@ local function calculate_right_column_width()
     if category_view_enabled then width_padding = width_padding + 15 end
     if organize_view_enabled then width_padding = width_padding + 15 end
     if detailed_view_enabled then width_padding = width_padding + 10 end
+    if label_view_enabled then width_padding = width_padding + 10 end
     -- Note: dictionary_view does NOT add to per-symbol padding
     local final_width = base_grid_width + (width_padding * 4)
     -- Add extra container space for dictionary view (not per-symbol)
@@ -4848,7 +4902,7 @@ local function calculate_right_column_width()
     if detailed_view_enabled and expanded_symbol then
         final_width = final_width + 80  -- Extra width for one expanded detail box
     end
-    print("DEBUG: calculate_right_column_width() -> " .. final_width .. " (padding=" .. width_padding .. ", tag=" .. tostring(category_view_enabled) .. ", org=" .. tostring(organize_view_enabled) .. ", info=" .. tostring(detailed_view_enabled) .. ", expanded=" .. tostring(expanded_symbol) .. ", dict=" .. tostring(dictionary_view_enabled) .. ")")
+    print("DEBUG: calculate_right_column_width() -> " .. final_width .. " (padding=" .. width_padding .. ", tag=" .. tostring(category_view_enabled) .. ", org=" .. tostring(organize_view_enabled) .. ", info=" .. tostring(detailed_view_enabled) .. ", label=" .. tostring(label_view_enabled) .. ", expanded=" .. tostring(expanded_symbol) .. ", dict=" .. tostring(dictionary_view_enabled) .. ")")
     return final_width
 end
 
@@ -5934,6 +5988,16 @@ local function create_symbol_editor_dialog()
                             notifier = function()
                                 toggle_dictionary_view_ui(vb)
                             end
+                        },
+                        vb:button {
+                            id = "label_toggle",
+                            text = label_view_enabled and "Label*" or "Label",
+                            width = 40,
+                            height = 22,
+                            tooltip = "Toggle label view - edit labels and breakpoints per symbol",
+                            notifier = function()
+                                toggle_label_view(vb)
+                            end
                         }
                     },
                     
@@ -6062,6 +6126,9 @@ local function create_symbol_editor_dialog()
                         end
                         if detailed_view_enabled then
                             width_padding = width_padding + 10  -- Extra for detail button
+                        end
+                        if label_view_enabled then
+                            width_padding = width_padding + 10  -- Extra for label button
                         end
                         -- Note: dictionary_view does NOT add to symbol width - only to container
                         
@@ -6202,6 +6269,25 @@ local function create_symbol_editor_dialog()
                                             end
                                         }
                                         
+                                        -- Label view: Label button (only in label mode)
+                                        local label_button = vb:button {
+                                            text = "L",
+                                            width = 20,
+                                            height = 25,
+                                            tooltip = "Edit labels and breakpoints for symbol " .. symbol,
+                                            visible = label_view_enabled,
+                                            notifier = function()
+                                                -- Open symbol labeler dialog
+                                                labeler.show_symbol_labeler(symbol, function()
+                                                    -- Callback after save - refresh the dialog
+                                                    if dialog and dialog.visible then
+                                                        dialog:close()
+                                                        show_main_dialog()
+                                                    end
+                                                end)
+                                            end
+                                        }
+                                        
                                         -- Store reference for visual feedback
                                         symbol_button_refs[symbol] = grid_symbol_button
                                         
@@ -6218,7 +6304,8 @@ local function create_symbol_editor_dialog()
                                                     spacing = 2,
                                                     grid_symbol_button,
                                                     preview_button,
-                                                    expand_button
+                                                    expand_button,
+                                                    label_button
                                                 }
                                             }
                                         )
@@ -7010,6 +7097,8 @@ labeler.set_global_symbol_functions(
     get_show_advanced_data,
     save_show_advanced_data
 )
+-- Set preview symbol callback for symbol labeler
+labeler.set_preview_symbol_callback(preview_symbol)
 
 -- Set up selection module functions
 selection.set_global_symbol_functions(get_global_symbol_registry, find_next_available_symbols, save_global_symbol_registry)

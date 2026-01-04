@@ -71,6 +71,14 @@ function labeler.set_global_symbol_functions(get_registry_func, assign_symbols_f
     labeler.load_custom_labels()
 end
 
+-- Preview symbol callback (set by main.lua)
+local preview_symbol_callback = nil
+
+-- Set preview symbol callback function
+function labeler.set_preview_symbol_callback(callback)
+    preview_symbol_callback = callback
+end
+
 -- Load custom labels from preferences
 function labeler.load_custom_labels()
     if get_custom_labels_data then
@@ -1508,10 +1516,536 @@ function labeler.show_dialog()
     labeler.dialog = dialog  -- Keep reference for external checking
 end
 
+-- ============================================================================
+-- Symbol Labeler: Per-symbol labeling and breakpoint management
+-- ============================================================================
+
+-- Symbol labeler dialog reference
+local symbol_labeler_dialog = nil
+
+-- Show the symbol labeler dialog for a specific symbol
+-- This allows users to relabel notes/slices within a symbol and add breakpoints
+function labeler.show_symbol_labeler(symbol_name, on_save_callback)
+    -- Get the global symbol registry
+    if not get_global_symbol_registry then
+        renoise.app():show_warning("Symbol registry not available")
+        return
+    end
+    
+    local registry = get_global_symbol_registry()
+    if not registry then
+        renoise.app():show_warning("Could not access symbol registry")
+        return
+    end
+    
+    local symbol_data = registry[symbol_name]
+    if not symbol_data then
+        renoise.app():show_warning("Symbol '" .. symbol_name .. "' not found in registry")
+        return
+    end
+    
+    local break_set = symbol_data.break_set
+    if not break_set or not break_set.timing or #break_set.timing == 0 then
+        renoise.app():show_warning("Symbol '" .. symbol_name .. "' has no timing data")
+        return
+    end
+    
+    -- Close any existing symbol labeler dialog
+    if symbol_labeler_dialog and symbol_labeler_dialog.visible then
+        symbol_labeler_dialog:close()
+        symbol_labeler_dialog = nil
+    end
+    
+    -- Stop any active preview
+    labeler.stop_slice_preview()
+    
+    local dialog_vb = renoise.ViewBuilder()
+    local instrument_index = symbol_data.instrument_index or 1
+    
+    -- Get saved labels for this instrument
+    local saved_labels = symbol_data.saved_labels or {}
+    local inst_labels = labeler.get_labels_for_instrument(instrument_index)
+    if inst_labels then
+        for k, v in pairs(inst_labels) do
+            if not saved_labels[k] then
+                saved_labels[k] = v
+            end
+        end
+    end
+    
+    -- Get all available labels for dropdowns
+    local all_labels = labeler.get_all_labels()
+    
+    -- Note name lookup
+    local note_names = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"}
+    
+    local function note_to_string(note_val)
+        if note_val == 120 then return "OFF"
+        elseif note_val == 121 or note_val == 255 then return "---"
+        else
+            local octave = math.floor(note_val / 12) - 2
+            local note_index = (note_val % 12) + 1
+            return string.format("%s%d", note_names[note_index], octave)
+        end
+    end
+    
+    -- Build dialog content
+    local dialog_content = dialog_vb:column {
+        margin = 10,
+        spacing = 5,
+        
+        -- Header row with Play All button
+        dialog_vb:row {
+            spacing = 10,
+            dialog_vb:text {
+                text = "Symbol Labeler: " .. symbol_name,
+                font = "bold",
+                style = "strong"
+            },
+            dialog_vb:button {
+                text = "Play All",
+                width = 60,
+                tooltip = "Preview entire symbol " .. symbol_name,
+                notifier = function()
+                    -- Stop any slice preview first
+                    labeler.stop_slice_preview()
+                    -- Call the main preview_symbol function
+                    if preview_symbol_callback then
+                        preview_symbol_callback(symbol_name)
+                    else
+                        print("DEBUG: preview_symbol_callback not set")
+                    end
+                end
+            }
+        },
+        
+        -- Instrument info
+        dialog_vb:row {
+            dialog_vb:text {
+                text = string.format("Instrument: %02X | Notes: %d", instrument_index - 1, #break_set.timing),
+                style = "disabled"
+            }
+        },
+        
+        dialog_vb:space { height = 5 },
+        
+        -- Column headers
+        dialog_vb:row {
+            spacing = 5,
+            dialog_vb:text { text = "#", width = 25, font = "bold" },
+            dialog_vb:text { text = "Note", width = 45, font = "bold" },
+            dialog_vb:text { text = "Slice", width = 40, font = "bold" },
+            dialog_vb:text { text = "Label", width = 100, font = "bold" },
+            dialog_vb:text { text = "BP", width = 25, font = "bold" },
+            dialog_vb:text { text = "", width = 25 }  -- Preview column
+        },
+        
+        dialog_vb:space { height = 2 }
+    }
+    
+    -- Create rows for each timing entry
+    local timing_entries = break_set.timing
+    local max_visible_rows = 16  -- Limit visible rows for usability
+    local show_scroll_hint = #timing_entries > max_visible_rows
+    
+    -- Container for timing rows (scrollable if needed)
+    local rows_container = dialog_vb:column {
+        id = "timing_rows_container",
+        spacing = 2
+    }
+    
+    for i, timing in ipairs(timing_entries) do
+        local note_val = timing.note_value or 0
+        local instrument_val = timing.instrument_value or 0
+        local hex_key = string.format("%02X", instrument_val)
+        
+        -- Get current label for this slice/note
+        local current_label = "---------"
+        local current_breakpoint = timing.breakpoint or false
+        
+        if saved_labels[hex_key] then
+            current_label = saved_labels[hex_key].label or "---------"
+        end
+        
+        -- Find label index in dropdown
+        local label_index = 1
+        for li, label in ipairs(all_labels) do
+            if label == current_label then
+                label_index = li
+                break
+            end
+        end
+        
+        local row = dialog_vb:row {
+            spacing = 5,
+            
+            -- Index
+            dialog_vb:text {
+                text = string.format("%02d", i),
+                width = 25,
+                style = "disabled"
+            },
+            
+            -- Note value
+            dialog_vb:text {
+                text = note_to_string(note_val),
+                width = 45
+            },
+            
+            -- Slice/instrument value
+            dialog_vb:text {
+                text = hex_key,
+                width = 40
+            },
+            
+            -- Label dropdown
+            dialog_vb:popup {
+                id = "sym_label_" .. i,
+                items = all_labels,
+                value = label_index,
+                width = 100
+            },
+            
+            -- Breakpoint checkbox
+            dialog_vb:checkbox {
+                id = "sym_bp_" .. i,
+                value = current_breakpoint,
+                width = 25
+            },
+            
+            -- Preview button
+            dialog_vb:button {
+                id = "sym_preview_" .. i,
+                text = ">",
+                width = 25,
+                notifier = function()
+                    local button_id = "sym_preview_" .. i
+                    -- Calculate correct slice trigger note: slice N triggers at note 36 + N
+                    local slice_trigger_note = 36 + instrument_val
+                    labeler.toggle_slice_preview(instrument_index, slice_trigger_note, button_id, dialog_vb)
+                end
+            }
+        }
+        
+        rows_container:add_child(row)
+    end
+    
+    dialog_content:add_child(rows_container)
+    
+    if show_scroll_hint then
+        dialog_content:add_child(dialog_vb:text {
+            text = string.format("Showing all %d entries", #timing_entries),
+            style = "disabled"
+        })
+    end
+    
+    -- Helper function to collect updated data from dialog
+    local function collect_updated_data()
+        local updated_labels = {}
+        local breakpoint_indices = {}  -- Track which timing indices have breakpoints
+        
+        for i, timing in ipairs(timing_entries) do
+            local label_popup = dialog_vb.views["sym_label_" .. i]
+            local bp_checkbox = dialog_vb.views["sym_bp_" .. i]
+            
+            if label_popup and bp_checkbox then
+                local selected_label = all_labels[label_popup.value]
+                local is_breakpoint = bp_checkbox.value
+                
+                -- Store breakpoint state in timing entry
+                timing.breakpoint = is_breakpoint
+                
+                -- Track breakpoint indices (skip first entry - can't break before first note)
+                if is_breakpoint and i > 1 then
+                    table.insert(breakpoint_indices, i)
+                end
+                
+                -- Update saved_labels for this slice
+                local hex_key = string.format("%02X", timing.instrument_value or 0)
+                if not updated_labels[hex_key] then
+                    updated_labels[hex_key] = saved_labels[hex_key] or {}
+                end
+                updated_labels[hex_key].label = selected_label
+                updated_labels[hex_key].breakpoint = is_breakpoint
+            end
+        end
+        
+        return updated_labels, breakpoint_indices
+    end
+    
+    -- Helper function to save labels to symbol data
+    local function save_labels_to_symbol(updated_labels)
+        for hex_key, label_data in pairs(updated_labels) do
+            if not symbol_data.saved_labels then
+                symbol_data.saved_labels = {}
+            end
+            if not symbol_data.saved_labels[hex_key] then
+                symbol_data.saved_labels[hex_key] = {}
+            end
+            symbol_data.saved_labels[hex_key].label = label_data.label
+            symbol_data.saved_labels[hex_key].breakpoint = label_data.breakpoint
+        end
+        
+        -- Save the global registry
+        if save_global_symbol_registry then
+            save_global_symbol_registry()
+        end
+    end
+    
+    -- Helper function to create new symbols from breakpoints
+    local function create_symbols_from_breakpoints(breakpoint_indices)
+        if #breakpoint_indices == 0 then
+            return nil, "No breakpoints marked (excluding first note)"
+        end
+        
+        -- Sort breakpoint indices
+        table.sort(breakpoint_indices)
+        
+        -- Create break sets by splitting timing at breakpoints
+        local new_break_sets = {}
+        local boundaries = {1}  -- Start with first note
+        for _, bp_idx in ipairs(breakpoint_indices) do
+            table.insert(boundaries, bp_idx)
+        end
+        table.insert(boundaries, #timing_entries + 1)  -- End boundary
+        
+        print("DEBUG: Creating symbols from breakpoint boundaries:", table.concat(boundaries, ", "))
+        print("DEBUG: Total timing entries:", #timing_entries)
+        
+        for i = 1, #boundaries - 1 do
+            local start_idx = boundaries[i]
+            local end_idx = boundaries[i + 1] - 1
+            
+            if end_idx >= start_idx then
+                local new_timing = {}
+                local first_entry = timing_entries[start_idx]
+                local first_line = first_entry.relative_line or 1
+                local first_delay = first_entry.new_delay or 0
+                
+                print("DEBUG: Break set", i, "from index", start_idx, "to", end_idx)
+                print("DEBUG: First entry - line:", first_line, "delay:", first_delay)
+                
+                for j = start_idx, end_idx do
+                    local orig_timing = timing_entries[j]
+                    -- Deep copy timing entry
+                    local new_entry = {}
+                    for k, v in pairs(orig_timing) do
+                        if type(v) == "table" then
+                            new_entry[k] = {}
+                            for kk, vv in pairs(v) do
+                                new_entry[k][kk] = vv
+                            end
+                        else
+                            new_entry[k] = v
+                        end
+                    end
+                    
+                    -- Adjust relative_line to start from 1
+                    local orig_line = orig_timing.relative_line or 1
+                    local orig_delay = orig_timing.new_delay or 0
+                    
+                    -- Calculate new delay relative to first note of this segment
+                    local adjusted_delay = orig_delay - first_delay
+                    local adjusted_line = orig_line - first_line + 1
+                    
+                    -- Handle negative delay by moving to previous line
+                    if adjusted_delay < 0 then
+                        adjusted_line = adjusted_line - 1
+                        adjusted_delay = 256 + adjusted_delay
+                    end
+                    
+                    -- For the first note, delay should always be 0
+                    if j == start_idx then
+                        new_entry.relative_line = 1
+                        new_entry.new_delay = 0
+                    else
+                        new_entry.relative_line = adjusted_line
+                        new_entry.new_delay = adjusted_delay
+                    end
+                    
+                    print("DEBUG: Entry", j - start_idx + 1, "- orig line:", orig_line, "orig delay:", orig_delay, 
+                          "-> new line:", new_entry.relative_line, "new delay:", new_entry.new_delay)
+                    
+                    table.insert(new_timing, new_entry)
+                end
+                
+                local new_break_set = {
+                    timing = new_timing,
+                    start_line = 1,
+                    end_line = new_timing[#new_timing].relative_line or 1
+                }
+                
+                table.insert(new_break_sets, new_break_set)
+                print("DEBUG: Created break set", i, "with", #new_timing, "notes")
+            end
+        end
+        
+        return new_break_sets
+    end
+    
+    -- Action buttons
+    dialog_content:add_child(dialog_vb:space { height = 10 })
+    dialog_content:add_child(
+        dialog_vb:row {
+            spacing = 5,
+            
+            -- Save & Create Symbols button
+            dialog_vb:button {
+                text = "Save & Create",
+                width = 90,
+                tooltip = "Save labels and create new symbols from marked breakpoints",
+                notifier = function()
+                    -- Stop any active preview
+                    labeler.stop_slice_preview()
+                    
+                    -- Collect updated data
+                    local updated_labels, breakpoint_indices = collect_updated_data()
+                    
+                    print("DEBUG: Save & Create - breakpoint_indices count:", #breakpoint_indices)
+                    for idx, bp in ipairs(breakpoint_indices) do
+                        print("DEBUG: Breakpoint", idx, "at timing index", bp)
+                    end
+                    
+                    -- Check if there are breakpoints to create symbols from
+                    if #breakpoint_indices == 0 then
+                        renoise.app():show_warning("No breakpoints marked. Mark at least one note (not the first) as a breakpoint to split the symbol.")
+                        return
+                    end
+                    
+                    -- Create new break sets from breakpoints
+                    local new_break_sets, error_msg = create_symbols_from_breakpoints(breakpoint_indices)
+                    
+                    print("DEBUG: Created", new_break_sets and #new_break_sets or 0, "break sets")
+                    
+                    if not new_break_sets or #new_break_sets == 0 then
+                        renoise.app():show_warning("Could not create symbols: " .. (error_msg or "No break sets created"))
+                        return
+                    end
+                    
+                    -- Assign new symbols to the break sets
+                    if assign_symbols_to_instrument then
+                        print("DEBUG: Calling assign_symbols_to_instrument with", #new_break_sets, "break sets")
+                        
+                        local assigned_symbols, assign_error = assign_symbols_to_instrument(
+                            instrument_index, 
+                            new_break_sets, 
+                            symbol_data.saved_labels or {}
+                        )
+                        
+                        print("DEBUG: assign_symbols_to_instrument returned:", assigned_symbols and table.concat(assigned_symbols, ", ") or "nil", "error:", assign_error or "none")
+                        
+                        if assigned_symbols and #assigned_symbols > 0 then
+                            -- Save labels to symbol data
+                            save_labels_to_symbol(updated_labels)
+                            
+                            -- IMPORTANT: Save the global registry to persist the new symbols
+                            if save_global_symbol_registry then
+                                save_global_symbol_registry()
+                                print("DEBUG: Saved global symbol registry")
+                            end
+                            
+                            print("DEBUG: Created new symbols:", table.concat(assigned_symbols, ", "))
+                            renoise.app():show_status(string.format(
+                                "Created %d new symbols: %s", 
+                                #assigned_symbols, 
+                                table.concat(assigned_symbols, ", ")
+                            ))
+                            
+                            -- Close dialog
+                            if symbol_labeler_dialog and symbol_labeler_dialog.visible then
+                                symbol_labeler_dialog:close()
+                                symbol_labeler_dialog = nil
+                            end
+                            
+                            -- Trigger callback if provided (this should refresh the main dialog)
+                            if on_save_callback then
+                                on_save_callback()
+                            end
+                        else
+                            renoise.app():show_warning("Could not assign symbols: " .. (assign_error or "Unknown error"))
+                        end
+                    else
+                        renoise.app():show_warning("Symbol assignment function not available")
+                        print("DEBUG: assign_symbols_to_instrument is nil!")
+                    end
+                end
+            },
+            
+            -- Save Only button
+            dialog_vb:button {
+                text = "Save Only",
+                width = 70,
+                tooltip = "Save labels without creating new symbols",
+                notifier = function()
+                    -- Stop any active preview
+                    labeler.stop_slice_preview()
+                    
+                    -- Collect updated data
+                    local updated_labels, _ = collect_updated_data()
+                    
+                    -- Save labels to symbol data
+                    save_labels_to_symbol(updated_labels)
+                    
+                    print("DEBUG: Symbol labeler saved for symbol " .. symbol_name)
+                    renoise.app():show_status("Symbol " .. symbol_name .. " labels saved")
+                    
+                    -- Close dialog
+                    if symbol_labeler_dialog and symbol_labeler_dialog.visible then
+                        symbol_labeler_dialog:close()
+                        symbol_labeler_dialog = nil
+                    end
+                    
+                    -- Trigger callback if provided
+                    if on_save_callback then
+                        on_save_callback()
+                    end
+                end
+            },
+            
+            -- Cancel button
+            dialog_vb:button {
+                text = "Cancel",
+                width = 60,
+                notifier = function()
+                    -- Stop any active preview
+                    labeler.stop_slice_preview()
+                    
+                    if symbol_labeler_dialog and symbol_labeler_dialog.visible then
+                        symbol_labeler_dialog:close()
+                        symbol_labeler_dialog = nil
+                    end
+                end
+            }
+        }
+    )
+    
+    -- Show dialog
+    symbol_labeler_dialog = renoise.app():show_custom_dialog(
+        "Symbol Labeler: " .. symbol_name,
+        dialog_content
+    )
+end
+
+-- Check if symbol labeler dialog is open
+function labeler.is_symbol_labeler_open()
+    return symbol_labeler_dialog and symbol_labeler_dialog.visible
+end
+
+-- Close symbol labeler dialog
+function labeler.close_symbol_labeler()
+    labeler.stop_slice_preview()
+    if symbol_labeler_dialog and symbol_labeler_dialog.visible then
+        symbol_labeler_dialog:close()
+        symbol_labeler_dialog = nil
+    end
+end
+
 -- Cleanup function
 function labeler.cleanup()
     -- Stop any active preview
     labeler.stop_slice_preview()
+    -- Close symbol labeler if open
+    labeler.close_symbol_labeler()
     if dialog and dialog.visible then
         dialog:close()
         dialog = nil

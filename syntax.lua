@@ -290,11 +290,15 @@ function syntax.prepare_global_symbol_labels(global_registry)
     local symbol_labels = {}
     
     for symbol, symbol_data in pairs(global_registry) do
-        if symbol_data.break_set and symbol_data.break_set.notes and #symbol_data.break_set.notes > 0 then
+        -- Check for break_set with either notes or timing data
+        local has_notes = symbol_data.break_set and symbol_data.break_set.notes and #symbol_data.break_set.notes > 0
+        local has_timing = symbol_data.break_set and symbol_data.break_set.timing and #symbol_data.break_set.timing > 0
+        
+        if has_notes or has_timing then
             symbol_labels[symbol] = {}
             
-            -- Check if this is a range-captured symbol (different formatting logic)
-            if symbol_data.symbol_type == "range_captured" then
+            -- Check if this is a range-captured symbol or has timing data (different formatting logic)
+            if symbol_data.symbol_type == "range_captured" or (has_timing and not has_notes) then
                 local label_count = 0
                 if symbol_data.saved_labels then
                     for _ in pairs(symbol_data.saved_labels) do
@@ -303,14 +307,14 @@ function syntax.prepare_global_symbol_labels(global_registry)
                 end
                 print("DEBUG: Formatting range symbol " .. symbol .. " with " .. label_count .. " labels")
                 
-                -- For range symbols, use timing data to get the correct formatting with labels
+                -- For range symbols or timing-only symbols, use timing data to get the correct formatting with labels
                 for i, timing in ipairs(symbol_data.break_set.timing) do
                     local formatted_label = format_range_symbol_label(timing, symbol_data.saved_labels)
                     table.insert(symbol_labels[symbol], formatted_label)
                     print("DEBUG: Range symbol " .. symbol .. " line " .. i .. ": " .. formatted_label)
                 end
             else
-                -- Original logic for breakpoint symbols
+                -- Original logic for breakpoint symbols with notes array
                 for _, note in ipairs(symbol_data.break_set.notes) do
                     local hex_key = string.format("%02X", note.instrument_value + 1)
                     local label = ""
