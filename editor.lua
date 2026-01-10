@@ -13,7 +13,8 @@ local get_overwrite_behavior_constants = nil
 local get_global_symbol_registry = nil
 local get_symbol_instrument_mapping = nil
 
--- State management for chaining symbols (unchanged)
+-- State management for chaining symbols
+-- Phase 5: Added per-track state for Independent multi-track mode
 local placement_state = {
     current_track = nil,
     current_line = nil,
@@ -23,7 +24,11 @@ local placement_state = {
     is_chaining = false,
     -- New timing state for proper stitching
     last_symbol_timing = nil,  -- Store timing info from last placed symbol
-    cumulative_timing = {}     -- Track cumulative timing for stitching
+    cumulative_timing = {},    -- Track cumulative timing for stitching
+    -- Phase 5: Per-track state for Independent multi-track mode
+    per_track_next_lines = {},    -- track_offset -> next_placement_line
+    per_track_last_timings = {},  -- track_offset -> last_symbol_timing
+    is_independent_mode = false   -- Flag for independent mode placement
 }
 
 -- Observable notifiers and idle tracking (unchanged)
@@ -113,7 +118,8 @@ function editor.check_cursor_change()
     placement_state.last_cursor_position.line = current_line
 end
 
--- Reset placement state (unchanged)
+-- Reset placement state
+-- Phase 5: Also resets per-track state for Independent mode
 function editor.reset_placement_state()
     placement_state.current_track = nil
     placement_state.current_line = nil
@@ -122,10 +128,18 @@ function editor.reset_placement_state()
     placement_state.is_chaining = false
     placement_state.last_symbol_timing = nil
     placement_state.cumulative_timing = {}
+    -- Phase 5: Reset per-track state
+    placement_state.per_track_next_lines = {}
+    placement_state.per_track_last_timings = {}
+    placement_state.is_independent_mode = false
 end
 
 -- Set reference to main module functions
-function editor.set_main_module_functions(overflow_behavior_getter, overflow_constants_getter, overwrite_behavior_getter, overwrite_constants_getter, instrument_source_behavior_getter, instrument_source_constants_getter, symbol_registry_getter, symbol_instrument_mapper)
+-- Phase 5: Added multi-track distance mode getters
+local get_multi_track_distance_mode = nil
+local get_multi_track_distance_mode_constants = nil
+
+function editor.set_main_module_functions(overflow_behavior_getter, overflow_constants_getter, overwrite_behavior_getter, overwrite_constants_getter, instrument_source_behavior_getter, instrument_source_constants_getter, symbol_registry_getter, symbol_instrument_mapper, multi_track_distance_mode_getter, multi_track_distance_mode_constants_getter)
     get_overflow_behavior = overflow_behavior_getter
     get_overflow_behavior_constants = overflow_constants_getter
     -- Store overwrite behavior functions
@@ -137,6 +151,9 @@ function editor.set_main_module_functions(overflow_behavior_getter, overflow_con
     -- Store global symbol registry functions
     get_global_symbol_registry = symbol_registry_getter
     get_symbol_instrument_mapping = symbol_instrument_mapper
+    -- Phase 5: Store multi-track distance mode functions
+    get_multi_track_distance_mode = multi_track_distance_mode_getter
+    get_multi_track_distance_mode_constants = multi_track_distance_mode_constants_getter
 end
 
 -- Get break sets - now primarily for legacy compatibility and caching
@@ -216,15 +233,82 @@ local function apply_timing_adjustment(set, adjusted_delay, next_start_line)
     return adjusted_set
 end
 
+-- Phase 5 Refactor: Get chaining info based on current distance mode
+-- Returns { unified = true/false, source_track = track_offset, source_info = per_track_info entry }
+-- Must be defined before calculate_stitched_placement_positions which uses it
+local function get_chaining_info_for_mode(break_set)
+    if not break_set.is_multi_track or not break_set.per_track_info then
+        return nil
+    end
+    
+    -- Get mode from main module
+    if not get_multi_track_distance_mode or not get_multi_track_distance_mode_constants then
+        print("DEBUG: Distance mode functions not available")
+        return nil
+    end
+    
+    local mode = get_multi_track_distance_mode()
+    local constants = get_multi_track_distance_mode_constants()
+    
+    if mode == constants.INDEPENDENT then
+        -- Independent mode - no unified chaining
+        return { unified = false }
+    end
+    
+    -- Find earliest or latest next note across tracks
+    local selected_track = nil
+    local selected_info = nil
+    local selected_tick = nil
+    
+    for track_offset, info in pairs(break_set.per_track_info) do
+        local tick = info.next_note.line * 256 + info.next_note.delay
+        
+        if mode == constants.SYNC_FIRST then
+            -- Find earliest (minimum tick)
+            if not selected_tick or tick < selected_tick then
+                selected_tick = tick
+                selected_track = track_offset
+                selected_info = info
+            end
+        elseif mode == constants.SYNC_LAST then
+            -- Find latest (maximum tick)
+            if not selected_tick or tick > selected_tick then
+                selected_tick = tick
+                selected_track = track_offset
+                selected_info = info
+            end
+        end
+    end
+    
+    if selected_track then
+        print("DEBUG: Mode " .. mode .. " selected track " .. selected_track .. " with next note at tick " .. selected_tick)
+        return {
+            unified = true,
+            source_track = selected_track,
+            source_info = selected_info
+        }
+    end
+    
+    return nil
+end
+
 -- Calculate stitched placement positions using breakpoints logic (CORRECTED: Simple cursor position fix)
 local function calculate_stitched_placement_positions(break_set, start_line, last_symbol_timing, symbol_type)
+    print("DEBUG: calculate_stitched_placement_positions - break_set.track_count = " .. tostring(break_set.track_count))
     local placement_info = {
         notes = {},
         next_line = start_line,
-        last_note_distance = nil  -- Track the last note's distance for pattern extension
+        last_note_distance = nil,  -- Track the last note's distance for pattern extension
+        -- Phase 5: Include multi-track metadata
+        is_multi_track = break_set.is_multi_track or false,
+        track_count = break_set.track_count or 1,
+        -- Phase 5 Refactor: Pass through per_track_info for state tracking
+        per_track_info = break_set.per_track_info or {}
     }
+    print("DEBUG: placement_info.track_count set to " .. placement_info.track_count)
     
     local current_set = break_set
+    local is_multi_track = break_set.is_multi_track or false
     
     -- If we have timing from a previous symbol, apply stitching logic
     if last_symbol_timing then
@@ -239,27 +323,82 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
         local next_start_line = prev_line + line_gap + 1
         
         print("DEBUG: Timing calculation - prev_line=" .. prev_line .. ", line_gap=" .. line_gap .. ", calculated next_start_line=" .. next_start_line .. ", but placement start_line=" .. start_line)
+        print("DEBUG: adjusted_delay=" .. adjusted_delay)
         
-        -- FIXED: Use the actual placement start_line, not the calculated next_start_line
-        -- Apply timing adjustment using the same logic as breakpoints
-        current_set = apply_timing_adjustment(break_set, adjusted_delay, start_line)
+        if is_multi_track then
+            -- MULTI-TRACK: Store adjusted_delay for use in the placement loop
+            -- We also need to know the symbol's first note delay to normalize properly
+            current_set = break_set  -- Don't modify the timing entries
+            placement_info.multi_track_start_delay_adjustment = adjusted_delay
+            
+            -- Get the first note's delay from the symbol (for normalization)
+            local first_note_delay = 0
+            if #break_set.timing > 0 then
+                first_note_delay = break_set.timing[1].new_delay or 0
+            end
+            placement_info.multi_track_first_note_delay = first_note_delay
+            
+            print("DEBUG: Multi-track symbol - adjusted_delay=" .. adjusted_delay .. ", first_note_delay=" .. first_note_delay)
+        else
+            -- Single-track: Apply timing adjustment as before (modifies all timing entries)
+            current_set = apply_timing_adjustment(break_set, adjusted_delay, start_line)
+        end
         
-        -- DON'T update start_line - keep the placement position
-        print("DEBUG: Using placement start_line=" .. start_line .. " instead of calculated=" .. next_start_line)
+        print("DEBUG: Using placement start_line=" .. start_line)
     end
     
     local base_line = start_line
     local last_note_timing = nil
     
+    -- Get multi-track adjustment values (if applicable)
+    local multi_track_adj = placement_info.multi_track_start_delay_adjustment or 0
+    local multi_track_first_delay = placement_info.multi_track_first_note_delay or 0
+    
     for _, timing in ipairs(current_set.timing) do
-        -- SIMPLE FIX: For first symbol, use cursor position; for chained symbols, use calculated position
         local target_line
-        if last_symbol_timing then
-            -- Chained symbol - use the calculated relative position
+        local target_delay
+        
+        if last_symbol_timing and is_multi_track then
+            -- MULTI-TRACK CHAINED SYMBOL
+            -- Multi-track preserves original delays, so we need to:
+            -- 1. Normalize by subtracting the first note's delay
+            -- 2. Add the adjusted_delay (just like single-track does)
+            -- 3. Handle overflow
+            -- Formula: target_delay = timing.new_delay - first_note_delay + adjusted_delay
+            
+            local normalized_delay = timing.new_delay - multi_track_first_delay + multi_track_adj
+            local line_increment = 0
+            
+            -- Handle overflow (delay >= 256) or underflow (delay < 0)
+            if normalized_delay >= 256 then
+                line_increment = math.floor(normalized_delay / 256)
+                normalized_delay = normalized_delay % 256
+            elseif normalized_delay < 0 then
+                -- Underflow: move to previous line
+                line_increment = math.floor(normalized_delay / 256)  -- Will be negative
+                normalized_delay = normalized_delay % 256
+                if normalized_delay < 0 then
+                    normalized_delay = normalized_delay + 256
+                    line_increment = line_increment - 1
+                end
+            end
+            
+            target_line = base_line + timing.relative_line - 1 + line_increment
+            target_delay = normalized_delay
+            
+            print("DEBUG: Multi-track chained (track " .. (timing.track_offset or 0) .. 
+                  ") - relative_line=" .. timing.relative_line .. ", delay=" .. timing.new_delay .. 
+                  ", normalized=" .. (timing.new_delay - multi_track_first_delay) ..
+                  " + adj=" .. multi_track_adj .. " -> target_line=" .. target_line .. ", target_delay=" .. target_delay)
+                  
+        elseif last_symbol_timing then
+            -- Single-track chained symbol - timing already adjusted by apply_timing_adjustment
             target_line = timing.relative_line
+            target_delay = timing.new_delay
         else
-            -- First symbol - place relative to cursor position
+            -- First symbol (not chained) - place relative to cursor position
             target_line = base_line + timing.relative_line - 1
+            target_delay = timing.new_delay
         end
         
         -- Calculate note value based on symbol type
@@ -274,48 +413,321 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
         
         table.insert(placement_info.notes, {
             line = target_line,
-            delay = timing.new_delay,
+            delay = target_delay,
             instrument_value = timing.instrument_value,
             note_value = note_value,
             source_instrument_index = timing.source_instrument_index,
-            original_distance = timing.original_distance  -- Include distance for pattern extension
+            original_distance = timing.original_distance,  -- Include distance for pattern extension
+            -- ENHANCED: More comprehensive content information
+            has_note = timing.has_note or (note_value ~= renoise.PatternLine.EMPTY_NOTE),
+            content_type = timing.content_type or (timing.has_note and "note" or "effect"),
+            volume_value = timing.volume_value,
+            panning_value = timing.panning_value,
+            effect_number_value = timing.effect_number_value,
+            effect_amount_value = timing.effect_amount_value,
+            effect_columns = timing.effect_columns or {},
+            -- Phase 5: For multi-track symbols, don't copy note_columns (each note is from a different track)
+            -- For single-track symbols, preserve note_columns for multi-column placement
+            note_columns = is_multi_track and {} or (timing.note_columns or {}),
+            -- Phase 5: Include track information for multi-track placement
+            track_index = timing.track_index,
+            track_offset = timing.track_offset or 0
         })
         
         -- Keep track of the last note timing for calculating next symbol position
         last_note_timing = timing
     end
     
-    -- Calculate next placement line based on the last note's distance
-    if last_note_timing then
-        -- Use the original distance from the breakpoints analysis
-        local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
-        local distance_delay = last_note_timing.original_distance % 256
-        
-        -- Calculate the effective end position
-        local last_note_line
-        if last_symbol_timing then
-            -- Chained symbol
-            last_note_line = last_note_timing.relative_line
+    -- Phase 5 Refactor: Calculate next_line based on per_track_info and distance mode
+    -- For Sync modes, we use the unified cutoff from per_track_info
+    if is_multi_track and break_set.per_track_info and next(break_set.per_track_info) then
+        local mode_info = get_chaining_info_for_mode(break_set)
+        if mode_info and mode_info.unified then
+            -- Sync First or Sync Last: use the selected track's next_note position
+            local source_info = mode_info.source_info
+            local source_track_offset = mode_info.source_track
+            local is_phantom = source_info.is_phantom or false
+            local source_distance = source_info.last_note.distance_to_next
+            
+            -- Find the source track's last note in our PLACED notes (not timing entries)
+            -- This ensures we use the actual placed positions
+            local source_last_placed_note = nil
+            for _, note in ipairs(placement_info.notes) do
+                if (note.track_offset or 0) == source_track_offset then
+                    source_last_placed_note = note  -- Keep updating to get the LAST one
+                end
+            end
+            
+            -- Calculate the ACTUAL placed line for the source track's last note
+            -- This is critical for chaining calculations
+            local effective_last_line
+            local effective_last_delay
+            
+            if source_last_placed_note then
+                -- Found the placed note for source track - use its ACTUAL position
+                effective_last_line = source_last_placed_note.line
+                effective_last_delay = source_last_placed_note.delay or 0
+                
+                print("DEBUG: Sync mode - found source track " .. source_track_offset .. 
+                      " in placed notes, last note at line " .. effective_last_line .. ", delay " .. effective_last_delay)
+            elseif is_phantom then
+                -- Phantom track: no actual notes, use the placement start as reference
+                effective_last_line = base_line
+                effective_last_delay = 0
+                
+                print("DEBUG: Sync mode (phantom) - track " .. source_track_offset .. 
+                      " is empty, using base_line " .. base_line .. " as reference")
+            else
+                -- Fallback: source track has notes in per_track_info but not in placed notes
+                -- This shouldn't normally happen, but handle it gracefully
+                effective_last_line = base_line + source_info.last_note.line - 1
+                effective_last_delay = source_info.last_note.delay or 0
+                
+                print("DEBUG: Sync mode - WARNING: source track " .. source_track_offset .. 
+                      " not found in placed notes, using source_info. Placed line: " .. effective_last_line)
+            end
+            
+            -- Calculate next_line using the source track's distance
+            local distance_in_lines = math.floor(source_distance / 256)
+            local distance_delay = source_distance % 256
+            
+            placement_info.next_line = effective_last_line + distance_in_lines
+            -- Account for delay overflow
+            if effective_last_delay + distance_delay >= 256 then
+                placement_info.next_line = placement_info.next_line + 1
+            end
+            
+            print("DEBUG: Sync mode - track " .. source_track_offset .. 
+                  ", effective last line: " .. effective_last_line ..
+                  ", delay: " .. effective_last_delay ..
+                  ", distance: " .. source_distance .. 
+                  ", next_line: " .. placement_info.next_line)
+            
+            -- Create last_timing for chaining using ACTUAL PLACED positions
+            -- relative_line must be the actual line where content ended up
+            placement_info.last_timing = {
+                relative_line = effective_last_line,  -- ACTUAL placed line
+                new_delay = effective_last_delay,
+                original_distance = source_distance
+            }
         else
-            -- First symbol
-            last_note_line = base_line + last_note_timing.relative_line - 1
+            -- Single track or mode functions not available - use last note timing as before
+            if last_note_timing then
+                local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
+                local distance_delay = last_note_timing.original_distance % 256
+                
+                local last_note_line
+                if last_symbol_timing then
+                    last_note_line = last_note_timing.relative_line
+                else
+                    last_note_line = base_line + last_note_timing.relative_line - 1
+                end
+                
+                placement_info.next_line = last_note_line + distance_in_lines
+                if last_note_timing.new_delay + distance_delay >= 256 then
+                    placement_info.next_line = placement_info.next_line + 1
+                end
+                
+                placement_info.last_timing = last_note_timing
+            end
+        end
+    else
+        -- Single track symbol - use original logic
+        if last_note_timing then
+            local distance_in_lines = math.floor(last_note_timing.original_distance / 256)
+            local distance_delay = last_note_timing.original_distance % 256
+            
+            local last_note_line
+            if last_symbol_timing then
+                last_note_line = last_note_timing.relative_line
+            else
+                last_note_line = base_line + last_note_timing.relative_line - 1
+            end
+            
+            placement_info.next_line = last_note_line + distance_in_lines
+            if last_note_timing.new_delay + distance_delay >= 256 then
+                placement_info.next_line = placement_info.next_line + 1
+            end
+            
+            placement_info.last_timing = last_note_timing
+            
+            placement_info.last_note_distance = {
+                line = last_note_line,
+                delay = last_note_timing.new_delay,
+                original_distance = last_note_timing.original_distance
+            }
+        end
+    end
+    
+    return placement_info
+end
+
+-- Phase 5 Refactor: Calculate placement positions for Independent multi-track mode
+-- Each track is treated independently with its own timing chain
+-- Uses per_track_info from break_set for accurate per-track distance calculations
+local function calculate_independent_placement_positions(break_set, cursor_line, per_track_next_lines, per_track_last_timings, symbol_type)
+    local placement_info = {
+        notes = {},
+        next_line = cursor_line,
+        last_note_distance = nil,
+        is_multi_track = break_set.is_multi_track or false,
+        track_count = break_set.track_count or 1,
+        -- Per-track state to return for chaining
+        per_track_next_lines = {},
+        per_track_last_timings = {}
+    }
+    
+    -- Get per_track_info from break_set (captured at selection time)
+    local per_track_info = break_set.per_track_info or {}
+    
+    -- Group timing entries by track_offset
+    local timings_by_track = {}
+    for _, timing in ipairs(break_set.timing) do
+        local track_offset = timing.track_offset or 0
+        if not timings_by_track[track_offset] then
+            timings_by_track[track_offset] = {}
+        end
+        table.insert(timings_by_track[track_offset], timing)
+    end
+    
+    print("DEBUG: Independent mode - processing " .. #break_set.timing .. " notes across " .. placement_info.track_count .. " tracks")
+    
+    -- Process each track independently
+    for track_offset, track_timings in pairs(timings_by_track) do
+        -- Get the start line and last timing for this specific track
+        local track_start_line = per_track_next_lines[track_offset] or cursor_line
+        local track_last_timing = per_track_last_timings[track_offset]
+        
+        -- Get this track's per_track_info for accurate distance
+        local track_info = per_track_info[track_offset]
+        
+        print("DEBUG: Track offset " .. track_offset .. " - start line: " .. track_start_line .. ", has previous timing: " .. tostring(track_last_timing ~= nil))
+        
+        -- Build a mini break_set for just this track's timings
+        local track_break_set = {
+            timing = track_timings,
+            is_multi_track = false,
+            track_count = 1
+        }
+        
+        -- Apply timing adjustment if we have previous timing for this track
+        local current_timings = track_timings
+        if track_last_timing then
+            local prev_delay = track_last_timing.new_delay
+            local delay_diff = 256 - prev_delay
+            local prev_distance = track_last_timing.original_distance
+            
+            local line_gap = math.floor((prev_distance - delay_diff) / 256)
+            local adjusted_delay = prev_distance - delay_diff - (line_gap * 256)
+            
+            -- Apply timing adjustment
+            local adjusted_set = apply_timing_adjustment(track_break_set, adjusted_delay, track_start_line)
+            current_timings = adjusted_set.timing
         end
         
-        placement_info.next_line = last_note_line + distance_in_lines
+        local track_last_note_timing = nil
         
-        -- If there's remaining delay, we might need to advance one more line
-        if last_note_timing.new_delay + distance_delay >= 256 then
-            placement_info.next_line = placement_info.next_line + 1
+        -- Process each timing entry for this track
+        for i, timing in ipairs(current_timings) do
+            local target_line
+            if track_last_timing then
+                -- Chained - use the adjusted relative position
+                target_line = timing.relative_line
+            else
+                -- First symbol for this track - place relative to start line
+                target_line = track_start_line + timing.relative_line - 1
+            end
+            
+            -- Calculate note value based on symbol type
+            local note_value
+            if symbol_type == "range_captured" then
+                note_value = timing.note_value or 48
+            else
+                note_value = 36 + timing.instrument_value
+            end
+            
+            table.insert(placement_info.notes, {
+                line = target_line,
+                delay = timing.new_delay,
+                instrument_value = timing.instrument_value,
+                note_value = note_value,
+                source_instrument_index = timing.source_instrument_index,
+                original_distance = timing.original_distance,
+                has_note = timing.has_note or (note_value ~= renoise.PatternLine.EMPTY_NOTE),
+                content_type = timing.content_type or (timing.has_note and "note" or "effect"),
+                volume_value = timing.volume_value,
+                panning_value = timing.panning_value,
+                effect_number_value = timing.effect_number_value,
+                effect_amount_value = timing.effect_amount_value,
+                effect_columns = timing.effect_columns or {},
+                note_columns = {},  -- Don't copy note_columns for multi-track - each note is separate
+                track_index = timing.track_index,
+                track_offset = track_offset
+            })
+            
+            track_last_note_timing = timing
         end
         
-        -- Store the last timing for next symbol
-        placement_info.last_timing = last_note_timing
-        
-        -- Store the last note's distance information for pattern extension
+        -- Calculate next placement line for this track using per_track_info
+        if track_last_note_timing then
+            -- Use per_track_info distance if available (more accurate)
+            local distance_to_use = track_last_note_timing.original_distance
+            if track_info and track_info.last_note then
+                distance_to_use = track_info.last_note.distance_to_next
+                print("DEBUG: Track " .. track_offset .. " using per_track_info distance: " .. distance_to_use)
+            end
+            
+            local distance_in_lines = math.floor(distance_to_use / 256)
+            local distance_delay = distance_to_use % 256
+            
+            local last_note_line
+            if track_last_timing then
+                last_note_line = track_last_note_timing.relative_line
+            else
+                last_note_line = track_start_line + track_last_note_timing.relative_line - 1
+            end
+            
+            local next_line_for_track = last_note_line + distance_in_lines
+            if track_last_note_timing.new_delay + distance_delay >= 256 then
+                next_line_for_track = next_line_for_track + 1
+            end
+            
+            placement_info.per_track_next_lines[track_offset] = next_line_for_track
+            -- Store timing with the correct distance for chaining
+            placement_info.per_track_last_timings[track_offset] = {
+                relative_line = track_last_note_timing.relative_line,
+                new_delay = track_last_note_timing.new_delay,
+                original_distance = distance_to_use  -- Use per_track_info distance
+            }
+            
+            print("DEBUG: Track offset " .. track_offset .. " - last note line: " .. last_note_line .. ", distance: " .. distance_to_use .. ", next line: " .. next_line_for_track)
+        end
+    end
+    
+    -- Set global next_line to the maximum across all tracks (for pattern extension)
+    local max_next_line = cursor_line
+    for _, next_line in pairs(placement_info.per_track_next_lines) do
+        if next_line > max_next_line then
+            max_next_line = next_line
+        end
+    end
+    placement_info.next_line = max_next_line
+    
+    -- Set last_timing to track 0's timing for backward compatibility
+    placement_info.last_timing = placement_info.per_track_last_timings[0]
+    
+    -- Find last note distance (use the one with longest distance for pattern extension)
+    local max_distance_note = nil
+    for _, note in ipairs(placement_info.notes) do
+        if note.original_distance and (not max_distance_note or note.line > max_distance_note.line) then
+            max_distance_note = note
+        end
+    end
+    if max_distance_note then
         placement_info.last_note_distance = {
-            line = last_note_line,
-            delay = last_note_timing.new_delay,
-            original_distance = last_note_timing.original_distance
+            line = max_distance_note.line,
+            delay = max_distance_note.delay,
+            original_distance = max_distance_note.original_distance
         }
     end
     
@@ -323,6 +735,7 @@ local function calculate_stitched_placement_positions(break_set, start_line, las
 end
 
 -- Place a symbol at the current cursor position using global symbol registry
+-- Phase 5: Now supports multi-track symbol placement with Independent mode
 function editor.place_symbol(symbol_name)
     print("DEBUG: editor.place_symbol() called with symbol: " .. tostring(symbol_name))
     
@@ -358,9 +771,39 @@ function editor.place_symbol(symbol_name)
         return false
     end
     
+    -- Phase 5: Check if this is a multi-track symbol and get distance mode
+    local is_multi_track = selected_set.is_multi_track or false
+    local track_count = selected_set.track_count or 1
+    local is_independent_mode = false
+    
+    if is_multi_track and get_multi_track_distance_mode and get_multi_track_distance_mode_constants then
+        local mode = get_multi_track_distance_mode()
+        local constants = get_multi_track_distance_mode_constants()
+        is_independent_mode = (mode == constants.INDEPENDENT)
+        print("DEBUG: Multi-track symbol detected - " .. track_count .. " tracks, Independent mode: " .. tostring(is_independent_mode))
+    elseif is_multi_track then
+        print("DEBUG: Multi-track symbol detected - " .. track_count .. " tracks")
+    end
+    
     -- Get current cursor position
     local current_track = song.selected_track_index
     local current_line = song.selected_line_index
+    
+    -- Phase 5: Validate that we have enough tracks for multi-track placement
+    if is_multi_track then
+        local sequencer_track_count = song.sequencer_track_count
+        local max_needed_track = current_track + track_count - 1
+        
+        if max_needed_track > sequencer_track_count then
+            local warning_msg = string.format(
+                "Multi-track symbol requires %d tracks, but only %d available from cursor position.",
+                track_count, 
+                sequencer_track_count - current_track + 1
+            )
+            print("DEBUG: " .. warning_msg)
+            renoise.app():show_status("BreakFast: " .. warning_msg)
+        end
+    end
     
     -- Initialize placement state if this is the first symbol or cursor moved
     if not placement_state.is_chaining or 
@@ -373,19 +816,32 @@ function editor.place_symbol(symbol_name)
         placement_state.is_chaining = true
         placement_state.last_symbol_timing = nil
         placement_state.cumulative_timing = {}
+        -- Phase 5: Reset per-track state when starting fresh
+        placement_state.per_track_next_lines = {}
+        placement_state.per_track_last_timings = {}
+        placement_state.is_independent_mode = is_independent_mode
     end
     
+    local placement_info
     
-    -- Use the break set from global registry (already validated above)
-    -- selected_set is already set from symbol_data.break_set
-    
-    -- Calculate placement positions using stitching logic
-    local placement_info = calculate_stitched_placement_positions(
-        selected_set, 
-        placement_state.next_placement_line, 
-        placement_state.last_symbol_timing,
-        symbol_type  -- Pass symbol type to calculation function
-    )
+    -- Phase 5: For Independent mode, calculate placement per-track
+    if is_independent_mode and is_multi_track then
+        placement_info = calculate_independent_placement_positions(
+            selected_set,
+            current_line,
+            placement_state.per_track_next_lines,
+            placement_state.per_track_last_timings,
+            symbol_type
+        )
+    else
+        -- Standard placement for single-track or sync modes
+        placement_info = calculate_stitched_placement_positions(
+            selected_set, 
+            placement_state.next_placement_line, 
+            placement_state.last_symbol_timing,
+            symbol_type
+        )
+    end
 
 -- ALWAYS use the placement position as the start line - this follows the chain correctly
     placement_info.original_start_line = placement_state.next_placement_line
@@ -467,15 +923,47 @@ function editor.place_symbol(symbol_name)
     end
     
     -- Place the notes
-    local success = editor.place_notes_in_pattern(placement_info, current_track)
+    -- Phase 5: Pass multi-track info to placement function
+    local success = editor.place_notes_in_pattern(placement_info, current_track, is_multi_track, track_count)
     
     if success then
-        -- Update next placement line and timing state for chaining
-        placement_state.next_placement_line = placement_info.next_line
-        placement_state.last_symbol_timing = placement_info.last_timing
+        -- Phase 5: Update state based on mode
+        if is_independent_mode and is_multi_track then
+            -- Store per-track state for Independent mode
+            if placement_info.per_track_next_lines then
+                for track_offset, next_line in pairs(placement_info.per_track_next_lines) do
+                    placement_state.per_track_next_lines[track_offset] = next_line
+                end
+            end
+            if placement_info.per_track_last_timings then
+                for track_offset, timing in pairs(placement_info.per_track_last_timings) do
+                    placement_state.per_track_last_timings[track_offset] = timing
+                end
+            end
+            -- Use earliest next line for cursor position reference
+            local earliest_next = nil
+            for _, next_line in pairs(placement_state.per_track_next_lines) do
+                if not earliest_next or next_line < earliest_next then
+                    earliest_next = next_line
+                end
+            end
+            if earliest_next then
+                placement_state.next_placement_line = earliest_next
+            end
+        else
+            -- Standard single-track or sync mode
+            placement_state.next_placement_line = placement_info.next_line
+            placement_state.last_symbol_timing = placement_info.last_timing
+        end
         
-        renoise.app():show_status(string.format("Placed symbol %s (%d notes)", 
-            symbol_name, #placement_info.notes))
+        -- Phase 5: Enhanced status message for multi-track
+        if is_multi_track then
+            renoise.app():show_status(string.format("Placed symbol %s (%d notes across %d tracks)", 
+                symbol_name, #placement_info.notes, track_count))
+        else
+            renoise.app():show_status(string.format("Placed symbol %s (%d notes)", 
+                symbol_name, #placement_info.notes))
+        end
         return true
     end
     
@@ -510,7 +998,10 @@ function editor.calculate_placement_positions(break_set, start_line)
             delay = timing.new_delay,
             instrument_value = timing.instrument_value,
             note_value = note_value,
-            source_instrument_index = timing.source_instrument_index
+            source_instrument_index = timing.source_instrument_index,
+            -- NEW: Include multi-column data for backward compatibility
+            note_columns = timing.note_columns,  -- All 12 note columns data
+            effect_columns = timing.effect_columns  -- All 8 effect columns data
         })
         
         -- Keep track of the last note timing for calculating next symbol position
@@ -678,7 +1169,854 @@ local function handle_loop_overflow(placement_info, pattern)
     return true, wrapped_notes > 0 and wrapped_notes or nil
 end
 
--- Handle sum overwrite behavior (existing)
+-- Helper function to check if note column data contains meaningful content
+local function has_note_data(note_col_data)
+    return note_col_data and (
+        note_col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+        note_col_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+        note_col_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+        note_col_data.delay_value ~= 0 or
+        note_col_data.effect_number_value ~= 0 or
+        note_col_data.effect_amount_value ~= 0
+    )
+end
+
+-- Helper function to check if effect column data contains meaningful content
+local function has_effect_data(fx_data)
+    return fx_data and (
+        fx_data.number_value ~= 0 or
+        fx_data.amount_value ~= 0
+    )
+end
+
+-- Find next available note column starting from a given column
+local function find_available_note_column(line, start_column)
+    start_column = start_column or 1
+    for col = start_column, #line.note_columns do
+        local note_column = line:note_column(col)
+        if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
+            return col
+        end
+    end
+    return nil
+end
+
+-- Place note column data with instrument source behavior support
+local function place_note_column_data(note_column, note_col_data, primary_note_data)
+    if note_col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+        note_column.note_value = note_col_data.note_value
+    end
+    
+    -- Handle instrument value with instrument source behavior
+    if note_col_data.instrument_value and note_col_data.instrument_value ~= renoise.PatternLine.EMPTY_INSTRUMENT then
+        local instrument_value
+        if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+            local current_behavior = get_instrument_source_behavior()
+            local behavior_constants = get_instrument_source_behavior_constants()
+            if current_behavior == behavior_constants.CURRENT_SELECTED then
+                instrument_value = renoise.song().selected_instrument_index - 1
+            else
+                -- Use the instrument from the note column data, but fall back to primary note's source
+                instrument_value = note_col_data.instrument_value
+                if instrument_value == renoise.PatternLine.EMPTY_INSTRUMENT and primary_note_data.source_instrument_index then
+                    instrument_value = (primary_note_data.source_instrument_index or 1) - 1
+                end
+            end
+        else
+            instrument_value = note_col_data.instrument_value
+            if instrument_value == renoise.PatternLine.EMPTY_INSTRUMENT and primary_note_data.source_instrument_index then
+                instrument_value = (primary_note_data.source_instrument_index or 1) - 1
+            end
+        end
+        note_column.instrument_value = instrument_value
+    end
+    
+    -- Set other note column properties
+    if note_col_data.volume_value and note_col_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+        note_column.volume_value = note_col_data.volume_value
+    end
+    if note_col_data.panning_value and note_col_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+        note_column.panning_value = note_col_data.panning_value
+    end
+    if note_col_data.delay_value and note_col_data.delay_value ~= 0 then
+        note_column.delay_value = note_col_data.delay_value
+    end
+    if note_col_data.effect_number_value and note_col_data.effect_number_value ~= 0 then
+        note_column.effect_number_value = note_col_data.effect_number_value
+    end
+    if note_col_data.effect_amount_value and note_col_data.effect_amount_value ~= 0 then
+        note_column.effect_amount_value = note_col_data.effect_amount_value
+    end
+end
+
+-- Place effect column data
+local function place_effect_data(effect_column, fx_data)
+    if fx_data.number_value and fx_data.number_value ~= 0 then
+        effect_column.number_value = fx_data.number_value
+    end
+    if fx_data.amount_value and fx_data.amount_value ~= 0 then
+        effect_column.amount_value = fx_data.amount_value
+    end
+end
+
+-- Show overflow dialog to user
+local function show_overflow_dialog(overflow_count, callback)
+    local vb = renoise.ViewBuilder()
+    local overflow_dialog = nil
+    
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
+        
+        vb:text {
+            text = "Track Overflow",
+            font = "big",
+            style = "strong"
+        },
+        
+        vb:text {
+            text = string.format("Cannot place %d additional note(s).", overflow_count),
+            width = 300
+        },
+        
+        vb:text {
+            text = "All 12 note columns are occupied in this track.",
+            width = 300
+        },
+        
+        vb:space { height = 5 },
+        
+        vb:text {
+            text = "How would you like to handle the overflow?",
+            style = "strong"
+        },
+        
+        vb:space { height = 10 },
+        
+        vb:row {
+            spacing = 10,
+            vb:button {
+                text = "Add New Track",
+                width = 120,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Add Track")
+                end
+            },
+            vb:button {
+                text = "Truncate",
+                width = 80,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Truncate")
+                end
+            },
+            vb:button {
+                text = "Cancel",
+                width = 80,
+                height = 30,
+                notifier = function()
+                    if overflow_dialog then overflow_dialog:close() end
+                    callback("Cancel")
+                end
+            }
+        }
+    }
+    
+    overflow_dialog = renoise.app():show_custom_dialog("BreakFast - Track Overflow", dialog_content)
+end
+
+-- Create new track for overflow data
+local function create_overflow_track(song, current_track_index, overflow_data)
+    if #overflow_data == 0 then
+        return true
+    end
+    
+    -- Insert new track after current track
+    local new_track_index = current_track_index + 1
+    song:insert_track_at(new_track_index)
+    
+    -- Name the new track
+    local new_track = song:track(new_track_index)
+    local current_track_name = song:track(current_track_index).name
+    new_track.name = current_track_name .. " Overflow"
+    
+    print("DEBUG: Created overflow track '" .. new_track.name .. "' at index " .. new_track_index)
+    print("DEBUG: Need to handle " .. #overflow_data .. " overflow items")
+    
+    return true, new_track_index
+end
+
+-- Handle column-aware placement for behaviors that work on a column-by-column basis
+local function place_column_aware_note_data(line, note_data, behavior_type)
+    local placed_columns = {}
+    local overflow_data = {}
+    
+    -- Behavior types: "substitute" or "retain"
+    local should_place_primary = true
+    local should_place_additional = true
+    
+    -- For substitute: place in column 1 regardless (substitute if occupied, place if empty)
+    -- For retain: only place in column 1 if it's empty
+    if behavior_type == "retain" then
+        local primary_column = line:note_column(1)
+        should_place_primary = (primary_column.note_value == renoise.PatternLine.EMPTY_NOTE)
+    end
+    
+    -- Place primary content in column 1 (if behavior allows)
+    if should_place_primary then
+        local note_column = line:note_column(1)
+        
+        -- Set note data if present, otherwise leave as empty note
+        if note_data.has_note then
+            note_column.note_value = note_data.note_value
+            
+            -- Determine instrument value based on instrument source behavior
+            local instrument_value
+            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                local current_behavior = get_instrument_source_behavior()
+                local behavior_constants = get_instrument_source_behavior_constants()
+                if current_behavior == behavior_constants.CURRENT_SELECTED then
+                    instrument_value = renoise.song().selected_instrument_index - 1
+                else
+                    instrument_value = (note_data.source_instrument_index or 1) - 1
+                end
+            else
+                instrument_value = (note_data.source_instrument_index or 1) - 1
+            end
+            note_column.instrument_value = instrument_value
+        end
+        
+        -- Always set volume, panning, delay, and effects (even for effect-only content)
+        if note_data.volume_value and note_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+            note_column.volume_value = note_data.volume_value
+        end
+        if note_data.panning_value and note_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+            note_column.panning_value = note_data.panning_value
+        end
+        note_column.delay_value = note_data.delay
+        if note_data.effect_number_value and note_data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            note_column.effect_number_value = note_data.effect_number_value
+        end
+        if note_data.effect_amount_value and note_data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+            note_column.effect_amount_value = note_data.effect_amount_value
+        end
+        
+        placed_columns[1] = 1
+        print("DEBUG: " .. behavior_type .. " placed primary content at column 1")
+    else
+        print("DEBUG: " .. behavior_type .. " skipped primary content (column 1 occupied)")
+    end
+    
+    -- Handle additional note columns from symbol (columns 2-12)
+    if note_data.note_columns then
+        for col_index = 2, 12 do
+            local note_col_data = note_data.note_columns[col_index]
+            if note_col_data and has_note_data(note_col_data) then
+                -- Check if we should place in this specific column
+                should_place_additional = true
+                
+                if behavior_type == "retain" and col_index <= #line.note_columns then
+                    local target_column = line:note_column(col_index)
+                    should_place_additional = (target_column.note_value == renoise.PatternLine.EMPTY_NOTE)
+                end
+                
+                if should_place_additional then
+                    -- Place in the corresponding column index if it exists
+                    if col_index <= #line.note_columns then
+                        local target_column = line:note_column(col_index)
+                        place_note_column_data(target_column, note_col_data, note_data)
+                        placed_columns[col_index] = col_index
+                        print("DEBUG: " .. behavior_type .. " placed note column " .. col_index .. " at column " .. col_index)
+                    else
+                        -- Column doesn't exist in track
+                        table.insert(overflow_data, {
+                            type = "note_column", 
+                            line = note_data.line,
+                            index = col_index, 
+                            data = note_col_data,
+                            primary_data = note_data
+                        })
+                        print("DEBUG: " .. behavior_type .. " note column " .. col_index .. " overflowed (column doesn't exist)")
+                    end
+                else
+                    print("DEBUG: " .. behavior_type .. " skipped note column " .. col_index .. " (column occupied)")
+                end
+            end
+        end
+    end
+    
+    -- Place effect columns - same logic for both behaviors
+    if note_data.effect_columns then
+        for fx_index = 1, 8 do
+            local fx_data = note_data.effect_columns[fx_index]
+            if fx_data and has_effect_data(fx_data) then
+                local should_place_effect = true
+                
+                if behavior_type == "retain" and fx_index <= #line.effect_columns then
+                    local effect_column = line:effect_column(fx_index)
+                    should_place_effect = (effect_column.number_value == 0 and effect_column.amount_value == 0)
+                end
+                
+                if should_place_effect then
+                    if fx_index <= #line.effect_columns then
+                        local effect_column = line:effect_column(fx_index)
+                        place_effect_data(effect_column, fx_data)
+                        print("DEBUG: " .. behavior_type .. " placed effect column " .. fx_index)
+                    else
+                        print("DEBUG: " .. behavior_type .. " effect column " .. fx_index .. " doesn't exist in track")
+                    end
+                else
+                    print("DEBUG: " .. behavior_type .. " skipped effect column " .. fx_index .. " (column occupied)")
+                end
+            end
+        end
+    end
+    
+    return placed_columns, overflow_data
+end
+
+-- Handle multi-column note placement for a single note or content line
+local function place_multi_column_note_data(line, note_data)
+    local placed_columns = {}
+    local overflow_data = {}
+    
+    -- Place primary content in first available column (notes or effects)
+    local primary_column = find_available_note_column(line, 1)
+    if primary_column then
+        local note_column = line:note_column(primary_column)
+        
+        -- Set note data if present, otherwise leave as empty note
+        if note_data.has_note then
+            note_column.note_value = note_data.note_value
+            
+            -- Determine instrument value based on instrument source behavior
+            local instrument_value
+            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                local current_behavior = get_instrument_source_behavior()
+                local behavior_constants = get_instrument_source_behavior_constants()
+                if current_behavior == behavior_constants.CURRENT_SELECTED then
+                    instrument_value = renoise.song().selected_instrument_index - 1
+                else
+                    instrument_value = (note_data.source_instrument_index or 1) - 1
+                end
+            else
+                instrument_value = (note_data.source_instrument_index or 1) - 1
+            end
+            note_column.instrument_value = instrument_value
+        end
+        
+        -- Always set volume, panning, delay, and effects (even for effect-only content)
+        if note_data.volume_value and note_data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+            note_column.volume_value = note_data.volume_value
+        end
+        if note_data.panning_value and note_data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+            note_column.panning_value = note_data.panning_value
+        end
+        note_column.delay_value = note_data.delay
+        if note_data.effect_number_value and note_data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+            note_column.effect_number_value = note_data.effect_number_value
+        end
+        if note_data.effect_amount_value and note_data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+            note_column.effect_amount_value = note_data.effect_amount_value
+        end
+        
+        placed_columns[1] = primary_column
+        print("DEBUG: Placed primary content (" .. (note_data.content_type or "unknown") .. ") at column " .. primary_column)
+    else
+        table.insert(overflow_data, {
+            type = "primary", 
+            line = note_data.line,
+            data = note_data
+        })
+        print("DEBUG: Primary content overflowed - no available columns")
+    end
+    
+    -- Place additional note columns if they exist
+    if note_data.note_columns then
+        for col_index = 2, 12 do
+            local note_col_data = note_data.note_columns[col_index]
+            if note_col_data and has_note_data(note_col_data) then
+                local available_column = find_available_note_column(line, (primary_column or 0) + 1)
+                if available_column then
+                    place_note_column_data(line:note_column(available_column), note_col_data, note_data)
+                    placed_columns[col_index] = available_column
+                    print("DEBUG: Placed additional note column " .. col_index .. " at column " .. available_column)
+                else
+                    table.insert(overflow_data, {
+                        type = "note_column", 
+                        line = note_data.line,
+                        index = col_index, 
+                        data = note_col_data,
+                        primary_data = note_data
+                    })
+                    print("DEBUG: Note column " .. col_index .. " overflowed")
+                end
+            end
+        end
+    end
+    
+    -- Place effect columns (these have dedicated slots, so less likely to overflow)
+    if note_data.effect_columns then
+        for fx_index = 1, 8 do
+            local fx_data = note_data.effect_columns[fx_index]
+            if fx_data and has_effect_data(fx_data) then
+                if fx_index <= #line.effect_columns then
+                    local effect_column = line:effect_column(fx_index)
+                    -- Always place effect data (overwrite existing values)
+                    place_effect_data(effect_column, fx_data)
+                    print("DEBUG: Placed effect column " .. fx_index)
+                else
+                    print("DEBUG: Effect column " .. fx_index .. " doesn't exist in track")
+                end
+            end
+        end
+    end
+    
+    return placed_columns, overflow_data
+end
+
+-- ============================================================================
+-- Phase 5: Multi-Track Overwrite Behavior Handlers
+-- These treat the entire multi-track symbol as a single atomic block
+-- ============================================================================
+
+-- Helper: Check if a single line has any content
+local function line_has_any_content(line)
+    -- Check note columns
+    for col = 1, 12 do
+        local nc = line:note_column(col)
+        if nc.note_value ~= renoise.PatternLine.EMPTY_NOTE or
+           nc.instrument_value ~= renoise.PatternLine.EMPTY_INSTRUMENT or
+           nc.volume_value ~= renoise.PatternLine.EMPTY_VOLUME or
+           nc.panning_value ~= renoise.PatternLine.EMPTY_PANNING or
+           nc.delay_value ~= 0 or
+           nc.effect_number_value ~= 0 then
+            return true
+        end
+    end
+    -- Check effect columns
+    for col = 1, 8 do
+        local ec = line:effect_column(col)
+        if ec.number_value ~= 0 or ec.amount_value ~= 0 then
+            return true
+        end
+    end
+    return false
+end
+
+-- Helper: Get the full range of a multi-track placement
+local function get_multi_track_placement_range(placement_info, base_track_index)
+    local range = {
+        min_line = math.huge,
+        max_line = 0,
+        tracks = {},  -- track_index -> true
+        track_offsets = {}  -- track_offset -> true
+    }
+    
+    for _, note in ipairs(placement_info.notes) do
+        local track_offset = note.track_offset or 0
+        local target_track = base_track_index + track_offset
+        range.tracks[target_track] = true
+        range.track_offsets[track_offset] = true
+        if note.line < range.min_line then range.min_line = note.line end
+        if note.line > range.max_line then range.max_line = note.line end
+    end
+    
+    -- Include range up to next_line for Replace behavior
+    if placement_info.next_line and placement_info.next_line - 1 > range.max_line then
+        range.max_line = placement_info.next_line - 1
+    end
+    
+    -- Use original_start_line if available
+    if placement_info.original_start_line and placement_info.original_start_line < range.min_line then
+        range.min_line = placement_info.original_start_line
+    end
+    
+    return range
+end
+
+-- Helper: Check if any content exists in the multi-track range
+local function multi_track_range_has_content(range, pattern, song)
+    for track_index, _ in pairs(range.tracks) do
+        if track_index >= 1 and track_index <= #song.tracks then
+            local track = pattern:track(track_index)
+            for line_idx = range.min_line, range.max_line do
+                if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                    if line_has_any_content(track:line(line_idx)) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- Helper: Count entries in a table (for tracks table)
+local function table_count(t)
+    local count = 0
+    for _ in pairs(t) do count = count + 1 end
+    return count
+end
+
+-- Helper: Clear all content in the multi-track range
+local function clear_multi_track_range(range, pattern, song)
+    for track_index, _ in pairs(range.tracks) do
+        if track_index >= 1 and track_index <= #song.tracks then
+            local track = pattern:track(track_index)
+            for line_idx = range.min_line, range.max_line do
+                if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                    track:line(line_idx):clear()
+                end
+            end
+        end
+    end
+    print("DEBUG: Multi-track Replace - cleared lines " .. range.min_line .. " to " .. range.max_line .. " across " .. table_count(range.tracks) .. " tracks")
+end
+
+-- Helper: Check if a specific line/track has content
+local function track_line_has_content(pattern, track_index, line_idx, song)
+    if track_index < 1 or track_index > #song.tracks then
+        return false
+    end
+    if line_idx < 1 or line_idx > pattern.number_of_lines then
+        return false
+    end
+    local track = pattern:track(track_index)
+    return line_has_any_content(track:line(line_idx))
+end
+
+-- Multi-track Sum: No pre-clearing needed, placement handles column finding
+local function handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    print("DEBUG: Multi-track Sum overwrite - no pre-clearing needed")
+    return true
+end
+
+-- Helper: Get the FULL track span (0 to track_count-1) - includes phantom/empty tracks
+local function get_full_track_span(placement_info)
+    local track_offsets = {}
+    local track_count = placement_info.track_count or 1
+    
+    print("DEBUG: get_full_track_span - placement_info.track_count = " .. tostring(placement_info.track_count) .. ", using track_count = " .. track_count)
+    
+    -- Include ALL tracks in the span, from 0 to track_count-1
+    for offset = 0, track_count - 1 do
+        track_offsets[offset] = true
+    end
+    
+    return track_offsets
+end
+
+-- Helper: Get all unique lines used by a placement
+local function get_lines_from_placement(placement_info)
+    local lines = {}
+    for _, note in ipairs(placement_info.notes) do
+        lines[note.line] = true
+    end
+    return lines
+end
+
+-- Helper: Check if ANY track in the symbol's FULL span has content on a specific line
+local function multi_track_line_has_content(pattern, base_track_index, line_idx, track_offsets, song)
+    for track_offset, _ in pairs(track_offsets) do
+        local target_track = base_track_index + track_offset
+        if track_line_has_content(pattern, target_track, line_idx, song) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Helper: Clear a specific line across ALL tracks in the symbol's FULL span
+local function clear_line_across_all_tracks(pattern, base_track_index, line_idx, track_offsets, song)
+    local cleared_count = 0
+    for track_offset, _ in pairs(track_offsets) do
+        local target_track = base_track_index + track_offset
+        if target_track >= 1 and target_track <= #song.tracks then
+            if line_idx >= 1 and line_idx <= pattern.number_of_lines then
+                local track = pattern:track(target_track)
+                local line = track:line(line_idx)
+                if line_has_any_content(line) then
+                    cleared_count = cleared_count + 1
+                end
+                line:clear()
+            end
+        end
+    end
+    return cleared_count
+end
+
+-- Helper: Build a map of which lines have content on ANY track in the symbol's FULL span
+-- Returns: table where line_number -> boolean (true if ANY track in span has content)
+local function build_line_content_map(placement_info, base_track_index, pattern, song)
+    local line_content_map = {}
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Get all unique lines used by this symbol
+    local lines_used = get_lines_from_placement(placement_info)
+    
+    -- For each line, check if ANY track in the FULL span has content
+    for line_num, _ in pairs(lines_used) do
+        line_content_map[line_num] = multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song)
+    end
+    
+    return line_content_map
+end
+
+-- Helper: Build a content map for an entire line RANGE (for Intersect behavior)
+-- Checks every line in the range, not just lines where symbol has notes
+local function build_range_content_map(min_line, max_line, base_track_index, track_offsets, pattern, song)
+    local line_content_map = {}
+    
+    for line_num = min_line, max_line do
+        if line_num >= 1 and line_num <= pattern.number_of_lines then
+            line_content_map[line_num] = multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song)
+        end
+    end
+    
+    return line_content_map
+end
+
+-- Multi-track Replace: Clear ALL lines in range across ALL tracks in FULL span, then place all notes
+-- Atomic: treats the entire block as one unit - clears everything before placing
+local function handle_multi_track_replace_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Calculate line range
+    local min_line = placement_info.original_start_line or math.huge
+    local max_line = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line < min_line then min_line = note.line end
+        if note.line > max_line then max_line = note.line end
+    end
+    
+    -- Extend to next_line if available (to include trailing space)
+    if placement_info.next_line and placement_info.next_line - 1 > max_line then
+        max_line = placement_info.next_line - 1
+    end
+    
+    -- Clamp to pattern bounds
+    min_line = math.max(1, min_line)
+    max_line = math.min(pattern.number_of_lines, max_line)
+    
+    -- Clear ALL tracks in the span for ALL lines in the range
+    local total_cleared = 0
+    for line_num = min_line, max_line do
+        total_cleared = total_cleared + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+    end
+    
+    local track_count = table_count(track_offsets)
+    print("DEBUG: Multi-track Replace (atomic) - cleared lines " .. min_line .. " to " .. max_line .. " across " .. track_count .. " tracks (" .. total_cleared .. " lines had content)")
+    return true
+end
+
+-- Multi-track Substitute: For each line with symbol notes, clear that line across ALL tracks in FULL span
+-- Atomic per line: clears holistically but only on lines where symbol has notes
+local function handle_multi_track_substitute_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    local lines_used = get_lines_from_placement(placement_info)
+    
+    -- Clear each line that has symbol notes across ALL tracks in span
+    local total_cleared = 0
+    local lines_cleared = 0
+    for line_num, _ in pairs(lines_used) do
+        if line_num >= 1 and line_num <= pattern.number_of_lines then
+            local cleared = clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            total_cleared = total_cleared + cleared
+            lines_cleared = lines_cleared + 1
+        end
+    end
+    
+    local track_count = table_count(track_offsets)
+    print("DEBUG: Multi-track Substitute (atomic) - cleared " .. lines_cleared .. " lines across " .. track_count .. " tracks (" .. total_cleared .. " lines had content)")
+    return true
+end
+
+-- Multi-track Retain: Skip ALL notes on lines where ANY track in span has content
+-- Atomic per line: if ANY track has content on line N, skip ALL symbol notes destined for line N
+local function handle_multi_track_retain_overwrite(placement_info, base_track_index, pattern, song)
+    -- Build the line content map (checks ALL tracks in symbol span per line)
+    local line_has_content = build_line_content_map(placement_info, base_track_index, pattern, song)
+    
+    -- Filter: keep only notes on lines that have NO content on any track in span
+    local filtered_notes = {}
+    local skipped_lines = {}
+    local kept_lines = {}
+    
+    for _, note in ipairs(placement_info.notes) do
+        if line_has_content[note.line] then
+            -- Skip this note - its line has content on at least one track in the span
+            skipped_lines[note.line] = true
+        else
+            -- Keep this note - no track in the span has content on this line
+            table.insert(filtered_notes, note)
+            kept_lines[note.line] = true
+        end
+    end
+    
+    -- Count unique lines for debug output
+    local skipped_count = table_count(skipped_lines)
+    local kept_count = table_count(kept_lines)
+    
+    placement_info.notes = filtered_notes
+    
+    print("DEBUG: Multi-track Retain (atomic) - kept " .. #filtered_notes .. " notes on " .. kept_count .. " lines, skipped " .. skipped_count .. " lines with conflicts")
+    return true
+end
+
+-- Multi-track Exclude: Clear ALL tracks on conflicting lines AND skip symbol notes on those lines
+-- Atomic per line: if ANY track has content on line N, clear line N on ALL tracks AND skip ALL symbol notes on line N
+local function handle_multi_track_exclude_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Build the line content map (checks ALL tracks in symbol span per line)
+    local line_has_content = build_line_content_map(placement_info, base_track_index, pattern, song)
+    
+    -- First pass: clear ALL tracks on lines that have conflicts
+    local total_cleared = 0
+    local lines_cleared = 0
+    for line_num, has_content in pairs(line_has_content) do
+        if has_content then
+            total_cleared = total_cleared + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            lines_cleared = lines_cleared + 1
+        end
+    end
+    
+    -- Second pass: filter out ALL notes on lines that had content
+    local filtered_notes = {}
+    local excluded_lines = {}
+    local kept_lines = {}
+    
+    for _, note in ipairs(placement_info.notes) do
+        if line_has_content[note.line] then
+            -- Exclude this note - its line had content (now cleared)
+            excluded_lines[note.line] = true
+        else
+            -- Keep this note - no track in the span had content on this line
+            table.insert(filtered_notes, note)
+            kept_lines[note.line] = true
+        end
+    end
+    
+    local excluded_count = table_count(excluded_lines)
+    local kept_count = table_count(kept_lines)
+    
+    placement_info.notes = filtered_notes
+    
+    print("DEBUG: Multi-track Exclude (atomic) - cleared " .. lines_cleared .. " lines, kept " .. #filtered_notes .. " notes on " .. kept_count .. " lines, excluded " .. excluded_count .. " lines with conflicts")
+    return true
+end
+
+-- Multi-track Intersect: If NO conflicts exist, place entire symbol. If conflicts exist, only place on conflicting lines.
+-- Clear non-conflicting existing content within the range.
+-- Atomic per line: conflict detection checks ALL tracks in span for each line
+local function handle_multi_track_intersect_overwrite(placement_info, base_track_index, pattern, song)
+    local track_offsets = get_full_track_span(placement_info)
+    
+    -- Step 1: Calculate the full range
+    local min_line = placement_info.original_start_line or math.huge
+    local max_line = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line < min_line then min_line = note.line end
+        if note.line > max_line then max_line = note.line end
+    end
+    
+    -- Extend to next_line if available (to include trailing space)
+    if placement_info.next_line and placement_info.next_line - 1 > max_line then
+        max_line = placement_info.next_line - 1
+    end
+    
+    -- Clamp to pattern bounds
+    min_line = math.max(1, min_line)
+    max_line = math.min(pattern.number_of_lines, max_line)
+    
+    -- Step 2: Find conflicts - lines where BOTH symbol has notes AND existing content exists
+    local conflicts = {}
+    for _, note in ipairs(placement_info.notes) do
+        if note.line >= min_line and note.line <= max_line then
+            -- Check if ANY track in the span has content on this line
+            if multi_track_line_has_content(pattern, base_track_index, note.line, track_offsets, song) then
+                conflicts[note.line] = true
+                print("DEBUG: Intersect found conflict at line " .. note.line)
+            end
+        end
+    end
+    
+    -- Step 3: Clear NON-CONFLICTING existing content within the range (across all tracks)
+    local cleared_count = 0
+    for line_num = min_line, max_line do
+        if not conflicts[line_num] then
+            -- This line has no conflict - clear any existing content
+            if multi_track_line_has_content(pattern, base_track_index, line_num, track_offsets, song) then
+                cleared_count = cleared_count + clear_line_across_all_tracks(pattern, base_track_index, line_num, track_offsets, song)
+            end
+        end
+    end
+    
+    -- Step 4: Filter notes - place ALL if no conflicts, otherwise only conflicting ones
+    local has_any_conflicts = next(conflicts) ~= nil
+    local filtered_notes = {}
+    local skipped_count = 0
+    
+    for _, note in ipairs(placement_info.notes) do
+        if note.line >= min_line and note.line <= max_line then
+            if not has_any_conflicts or conflicts[note.line] then
+                -- No conflicts at all, OR this specific line has a conflict - place it
+                table.insert(filtered_notes, note)
+            else
+                -- There are conflicts elsewhere, but not on this line - skip it
+                skipped_count = skipped_count + 1
+            end
+        else
+            skipped_count = skipped_count + 1
+        end
+    end
+    
+    placement_info.notes = filtered_notes
+    
+    local conflict_count = 0
+    for _ in pairs(conflicts) do conflict_count = conflict_count + 1 end
+    
+    print("DEBUG: Multi-track Intersect (atomic) - range " .. min_line .. " to " .. max_line .. 
+          ", conflicts on " .. conflict_count .. " lines, cleared " .. cleared_count .. 
+          " non-conflicting lines, placing " .. #filtered_notes .. " notes, skipped " .. skipped_count)
+    return true
+end
+
+-- Main multi-track overwrite handler - dispatches to specific handler
+local function handle_multi_track_overwrite(placement_info, base_track_index, pattern, song)
+    if not get_overwrite_behavior or not get_overwrite_behavior_constants then
+        -- Fallback to sum behavior
+        return handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    end
+    
+    local overwrite_mode = get_overwrite_behavior()
+    local constants = get_overwrite_behavior_constants()
+    
+    if overwrite_mode == constants.SUM then
+        return handle_multi_track_sum_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.REPLACE then
+        return handle_multi_track_replace_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.SUBSTITUTE then
+        return handle_multi_track_substitute_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.RETAIN then
+        return handle_multi_track_retain_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.EXCLUDE then
+        return handle_multi_track_exclude_overwrite(placement_info, base_track_index, pattern, song)
+    elseif overwrite_mode == constants.INTERSECT then
+        return handle_multi_track_intersect_overwrite(placement_info, base_track_index, pattern, song)
+    end
+    
+    -- Default: proceed with placement
+    return true
+end
+
+-- Handle sum overwrite behavior (existing - single track)
 local function handle_sum_overwrite(placement_info, track, pattern)
     -- This is the current default behavior - try first column, then additional columns
     -- No special handling needed here since this is implemented in the note placement loop
@@ -907,10 +2245,10 @@ local function handle_replace_overwrite(placement_info, track, pattern)
     return true
 end
 
--- NEW: Handle substitute overwrite behavior
+-- UPDATED: Handle substitute overwrite behavior (per-column clearing)
 local function handle_substitute_overwrite(placement_info, track, pattern)
-    -- Substitute behavior: Only replace notes on lines where the new symbol has notes
-    -- Leave all other existing notes untouched
+    -- Substitute behavior: Only replace notes on specific columns where the new symbol has notes
+    -- Leave all other existing notes untouched (per-column basis)
     
     if not placement_info.notes or #placement_info.notes == 0 then
         return true -- Nothing to substitute
@@ -920,35 +2258,49 @@ local function handle_substitute_overwrite(placement_info, track, pattern)
     local start_line = placement_info.original_start_line
     print("DEBUG: Substitute using original cursor position: " .. (start_line or "unknown"))
     
-    -- Create a set of lines where new notes will be placed
-    local new_note_lines = {}
+    -- Build a map of line -> columns that will have new notes
+    local new_note_positions = {} -- [line_num][column_num] = true
     for _, note in ipairs(placement_info.notes) do
-        new_note_lines[note.line] = true
+        if not new_note_positions[note.line] then
+            new_note_positions[note.line] = {}
+        end
+        
+        -- Primary note goes in column 1
+        new_note_positions[note.line][1] = true
+        
+        -- Additional note columns (if any)
+        if note.note_columns then
+            for col_index = 2, 12 do
+                local note_col_data = note.note_columns[col_index]
+                if note_col_data and has_note_data(note_col_data) then
+                    new_note_positions[note.line][col_index] = true
+                end
+            end
+        end
     end
     
-    -- Clear notes only on lines where new notes will be placed
+    -- Clear notes only in specific columns where new notes will be placed
     local cleared_notes = 0
-    for line_num, _ in pairs(new_note_lines) do
+    for line_num, columns in pairs(new_note_positions) do
         if line_num >= 1 and line_num <= pattern.number_of_lines then
             local line = track:line(line_num)
             
-            -- Clear all note columns on this specific line only
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
+            -- Clear only the specific columns where new notes will be placed
+            for col_num, _ in pairs(columns) do
+                if col_num <= #line.note_columns then
+                    local note_column = line:note_column(col_num)
+                    if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                        note_column:clear()
+                        cleared_notes = cleared_notes + 1
+                        print("DEBUG: Substitute cleared existing note at line " .. line_num .. " column " .. col_num)
+                    end
                 end
             end
         end
     end
     
     if cleared_notes > 0 then
-        local line_count = 0
-        for _ in pairs(new_note_lines) do
-            line_count = line_count + 1
-        end
-        print("DEBUG: Substitute behavior cleared " .. cleared_notes .. " notes from " .. line_count .. " conflicting lines")
+        print("DEBUG: Substitute behavior cleared " .. cleared_notes .. " notes from specific columns")
     end
     
     return true
@@ -1019,20 +2371,66 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
     local start_line = placement_info.original_start_line
     print("DEBUG: Exclude using original cursor position: " .. (start_line or "unknown"))
     
+    -- Helper function to check if a line has any meaningful content across all columns
+    local function line_has_meaningful_content(line)
+        -- Check all 12 note columns for any content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                return true
+            end
+        end
+        
+        -- Check all 8 effect columns for any content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                return true
+            end
+        end
+        
+        return false
+    end
+    
+    -- Helper function to clear all meaningful content from a line
+    local function clear_line_content(line)
+        local cleared_count = 0
+        
+        -- Clear all note columns that have content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                note_column:clear()
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        -- Clear all effect columns that have content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                effect_column.number_value = 0
+                effect_column.amount_value = 0
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        return cleared_count
+    end
+    
     -- First pass: identify conflicts and track what to clear/skip
     -- Use the actual final line positions (post-overflow)
-    local conflicts = {} -- lines where both new and existing notes exist
-    local cleared_notes = 0
+    local conflicts = {} -- lines where both new and existing content exist
+    local cleared_items = 0
     local skipped_notes = 0
     
     for _, note in ipairs(placement_info.notes) do
         -- Ensure line is within pattern bounds (should be after overflow handling)
         if note.line >= 1 and note.line <= pattern.number_of_lines then
             local line = track:line(note.line)
-            local first_column = line:note_column(1)
             
-            -- Check if there's an existing note that would conflict
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+            -- Check if there's existing content that would conflict
+            if line_has_meaningful_content(line) then
                 conflicts[note.line] = true
                 print("DEBUG: Exclude found conflict at line " .. note.line)
             end
@@ -1041,13 +2439,11 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
         end
     end
     
-    -- Second pass: clear existing notes on conflicting lines
+    -- Second pass: clear existing content on conflicting lines
     for line_num, _ in pairs(conflicts) do
         local line = track:line(line_num)
-        local first_column = line:note_column(1)
-        print("DEBUG: Exclude clearing existing note at line " .. line_num)
-        first_column:clear()
-        cleared_notes = cleared_notes + 1
+        print("DEBUG: Exclude clearing existing content at line " .. line_num)
+        cleared_items = cleared_items + clear_line_content(line)
     end
     
     -- Third pass: filter out new notes that would conflict
@@ -1074,9 +2470,9 @@ local function handle_exclude_overwrite(placement_info, track, pattern)
     placement_info.notes = excluded_notes
     
     -- Show exclude message
-    if cleared_notes > 0 or skipped_notes > 0 then
-        local message = string.format("Exclude: %d existing notes cleared, %d new notes skipped, %d notes placed", 
-            cleared_notes, skipped_notes, #excluded_notes)
+    if cleared_items > 0 or skipped_notes > 0 then
+        local message = string.format("Exclude: %d existing content items cleared, %d new notes skipped, %d notes placed", 
+            cleared_items, skipped_notes, #excluded_notes)
         renoise.app():show_status(message)
         print("DEBUG: " .. message)
     end
@@ -1203,6 +2599,53 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         print("DEBUG: Intersect behavior (last resort) - range ends at line " .. end_line)
     end
     
+    -- Helper function to check if a line has any meaningful content across all columns
+    local function line_has_meaningful_content(line)
+        -- Check all 12 note columns for any content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                return true
+            end
+        end
+        
+        -- Check all 8 effect columns for any content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                return true
+            end
+        end
+        
+        return false
+    end
+    
+    -- Helper function to clear all meaningful content from a line
+    local function clear_line_content(line)
+        local cleared_count = 0
+        
+        -- Clear all note columns that have content
+        for col = 1, #line.note_columns do
+            local note_column = line:note_column(col)
+            if has_note_data(note_column) then
+                note_column:clear()
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        -- Clear all effect columns that have content
+        for col = 1, #line.effect_columns do
+            local effect_column = line:effect_column(col)
+            if has_effect_data(effect_column) then
+                effect_column.number_value = 0
+                effect_column.amount_value = 0
+                cleared_count = cleared_count + 1
+            end
+        end
+        
+        return cleared_count
+    end
+    
     -- Handle different scenarios based on overflow behavior and range
     if is_truncate_mode then
         -- Truncate mode: Process only within pattern boundaries, no wraparound
@@ -1216,24 +2659,21 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line)
                 end
             end
         end
         
-        -- Clear non-conflicting existing notes within the range
+        -- Clear non-conflicting existing content within the range
         local cleared_notes = 0
         for line_num = start_line, end_line do
             local line = track:line(line_num)
-            local first_column = line:note_column(1)
             
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                first_column:clear()
-                cleared_notes = cleared_notes + 1
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+                cleared_notes = cleared_notes + clear_line_content(line)
             end
         end
         
@@ -1257,7 +2697,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         placement_info.notes = intersected_notes
         
         if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (truncate) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
+            print("DEBUG: Intersect (truncate) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
         end
         
     elseif original_end_line and original_end_line > pattern.number_of_lines then
@@ -1275,9 +2715,8 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= pattern.number_of_lines then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line .. " (original range)")
                 end
@@ -1289,16 +2728,15 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= 1 and note.line <= wrapped_end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     wrapped_conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line .. " (wrapped range)")
                 end
             end
         end
         
-        -- Clear non-conflicting notes in original range
+        -- Clear non-conflicting content in original range
         local cleared_notes = 0
         local cleared_original = 0
         local cleared_wrapped = 0
@@ -1308,38 +2746,30 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for line_num = start_line, pattern.number_of_lines do
             local line = track:line(line_num)
             
-            -- Clear ALL note columns for non-conflicting lines
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
-                    cleared_original = cleared_original + 1
-                end
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+                local cleared = clear_line_content(line)
+                cleared_notes = cleared_notes + cleared
+                cleared_original = cleared_original + cleared
             end
         end
         
-        -- Clear non-conflicting notes in wrapped range
+        -- Clear non-conflicting content in wrapped range
         for line_num = 1, wrapped_end_line do
             local line = track:line(line_num)
             
-            -- Clear ALL note columns for non-conflicting lines
-            for col = 1, #line.note_columns do
-                local note_column = line:note_column(col)
-                if note_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not wrapped_conflicts[line_num] then
-                    note_column:clear()
-                    cleared_notes = cleared_notes + 1
-                    cleared_wrapped = cleared_wrapped + 1
-                end
+            if line_has_meaningful_content(line) and not wrapped_conflicts[line_num] then
+                local cleared = clear_line_content(line)
+                cleared_notes = cleared_notes + cleared
+                cleared_wrapped = cleared_wrapped + cleared
             end
         end
         
         if cleared_notes > 0 then
-            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " non-conflicting notes: " .. 
+            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " non-conflicting content items: " .. 
                   cleared_original .. " from original range (lines " .. start_line .. "-" .. pattern.number_of_lines .. "), " ..
                   cleared_wrapped .. " from wrapped range (lines 1-" .. wrapped_end_line .. ")")
         else
-            print("DEBUG: Intersect (wraparound) - no non-conflicting notes found to clear")
+            print("DEBUG: Intersect (wraparound) - no non-conflicting content found to clear")
         end
         
         -- Filter new notes based on conflicts in both ranges
@@ -1365,7 +2795,7 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         placement_info.notes = intersected_notes
         
         if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
+            print("DEBUG: Intersect (wraparound) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
         end
         
     else
@@ -1380,56 +2810,55 @@ local function handle_intersect_overwrite(placement_info, track, pattern)
         for _, note in ipairs(placement_info.notes) do
             if note.line >= start_line and note.line <= end_line then
                 local line = track:line(note.line)
-                local first_column = line:note_column(1)
                 
-                if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE then
+                if line_has_meaningful_content(line) then
                     conflicts[note.line] = true
                     print("DEBUG: Intersect found conflict at line " .. note.line)
                 end
             end
         end
         
-        -- Clear non-conflicting existing notes within the range
+        -- Clear non-conflicting existing content within the range
         local cleared_notes = 0
         for line_num = start_line, end_line do
             local line = track:line(line_num)
-            local first_column = line:note_column(1)
             
-            if first_column.note_value ~= renoise.PatternLine.EMPTY_NOTE and not conflicts[line_num] then
-                first_column:clear()
-                cleared_notes = cleared_notes + 1
-            end
-        end
-        
-        -- Filter new notes: place all if no conflicts, otherwise only conflicting ones
-        local has_any_conflicts = next(conflicts) ~= nil
-        local intersected_notes = {}
-        local skipped_notes = 0
-        
-        for _, note in ipairs(placement_info.notes) do
-            if note.line >= start_line and note.line <= end_line then
-                if not has_any_conflicts or conflicts[note.line] then
-                    table.insert(intersected_notes, note)
-                else
-                    skipped_notes = skipped_notes + 1
-                end
-            else
-                skipped_notes = skipped_notes + 1
-            end
-        end
-        
-        placement_info.notes = intersected_notes
-        
-        if cleared_notes > 0 or skipped_notes > 0 then
-            print("DEBUG: Intersect (normal) cleared " .. cleared_notes .. " notes, skipped " .. skipped_notes .. " new notes")
-        end
-    end
-    
-    return true
-end
+            if line_has_meaningful_content(line) and not conflicts[line_num] then
+               cleared_notes = cleared_notes + clear_line_content(line)
+           end
+       end
+       
+       -- Filter new notes: place all if no conflicts, otherwise only conflicting ones
+       local has_any_conflicts = next(conflicts) ~= nil
+       local intersected_notes = {}
+       local skipped_notes = 0
+       
+       for _, note in ipairs(placement_info.notes) do
+           if note.line >= start_line and note.line <= end_line then
+               if not has_any_conflicts or conflicts[note.line] then
+                   table.insert(intersected_notes, note)
+               else
+                   skipped_notes = skipped_notes + 1
+               end
+           else
+               skipped_notes = skipped_notes + 1
+           end
+       end
+       
+       placement_info.notes = intersected_notes
+       
+       if cleared_notes > 0 or skipped_notes > 0 then
+           print("DEBUG: Intersect (normal) cleared " .. cleared_notes .. " content items, skipped " .. skipped_notes .. " new notes")
+       end
+   end
+   
+   return true
+end                
 
--- UPDATED: Place notes in the pattern (now includes substitute overwrite behavior handling)
-function editor.place_notes_in_pattern(placement_info, track_index)
+
+-- UPDATED: Place notes in the pattern (now with multi-column support and overflow handling)
+-- Phase 5: Added is_multi_track and track_count parameters for multi-track placement
+function editor.place_notes_in_pattern(placement_info, track_index, is_multi_track, track_count)
     if not renoise.song() then
         renoise.app():show_warning("Song not available")
         return false
@@ -1438,7 +2867,11 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     local song = renoise.song()
     local pattern = song.selected_pattern
     
-    -- Validate track
+    -- Phase 5: Default multi-track parameters
+    is_multi_track = is_multi_track or placement_info.is_multi_track or false
+    track_count = track_count or placement_info.track_count or 1
+    
+    -- Validate base track
     if track_index < 1 or track_index > #song.tracks then
         renoise.app():show_warning("Invalid track selected")
         return false
@@ -1447,6 +2880,23 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     if song.tracks[track_index].type ~= renoise.Track.TRACK_TYPE_SEQUENCER then
         renoise.app():show_warning("Selected track is not a sequencer track")
         return false
+    end
+    
+    -- Phase 5: Helper function to get valid target track for a note
+    local function get_target_track_index(note)
+        local note_track_offset = note.track_offset or 0
+        local target_track = track_index + note_track_offset
+        
+        -- Validate target track exists and is a sequencer track
+        if target_track < 1 or target_track > #song.tracks then
+            return track_index
+        end
+        
+        if song.tracks[target_track].type ~= renoise.Track.TRACK_TYPE_SEQUENCER then
+            return track_index
+        end
+        
+        return target_track
     end
     
     local track = pattern:track(track_index)
@@ -1474,202 +2924,230 @@ function editor.place_notes_in_pattern(placement_info, track_index)
     end
     
     -- UPDATED: Handle overwrite behavior AFTER overflow (so it works on final positions)
+    -- Phase 5: Use separate handlers for multi-track vs single-track
+    if is_multi_track then
+        -- Multi-track: treat entire symbol as atomic block
+        local proceed, skip_reason = handle_multi_track_overwrite(placement_info, track_index, pattern, song)
+        if not proceed then
+            if skip_reason == "substitute_skip" then
+                -- Symbol skipped due to Substitute mode - still update chaining state
+                print("DEBUG: Multi-track Substitute - symbol skipped, returning success for chaining")
+                return true
+            end
+            return false
+        end
+        -- Check if all notes were filtered out (Retain/Exclude/Intersect)
+        if #placement_info.notes == 0 then
+            print("DEBUG: Multi-track overwrite filtered all notes - nothing to place")
+            return true
+        end
+    else
+        -- Single-track: use existing per-note handlers
+        if get_overwrite_behavior and get_overwrite_behavior_constants then
+            local current_overwrite_behavior = get_overwrite_behavior()
+            local overwrite_constants = get_overwrite_behavior_constants()
+            
+            if current_overwrite_behavior == overwrite_constants.SUM then
+                handle_sum_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.REPLACE then
+                handle_replace_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
+                -- SUBSTITUTE: No clearing at all - column-aware placement handles everything
+            elseif current_overwrite_behavior == overwrite_constants.RETAIN then
+                -- RETAIN: No clearing - let column-aware placement handle conflicts naturally
+            elseif current_overwrite_behavior == overwrite_constants.EXCLUDE then
+                handle_exclude_overwrite(placement_info, track, pattern)
+            elseif current_overwrite_behavior == overwrite_constants.INTERSECT then
+                handle_intersect_overwrite(placement_info, track, pattern)
+            else
+                -- Fall back to sum behavior for unknown options
+                handle_sum_overwrite(placement_info, track, pattern)
+            end
+        else
+            -- Fallback if overwrite behavior functions not available (maintain backward compatibility)
+            handle_sum_overwrite(placement_info, track, pattern)
+        end
+    end
+    
+    -- NEW: Collect all overflow data from multi-column placement
+    local all_overflow_data = {}
+    
+    -- Get current overwrite behavior to determine placement strategy
+    local use_sum_behavior = true -- Default to SUM for multi-column logic
     if get_overwrite_behavior and get_overwrite_behavior_constants then
         local current_overwrite_behavior = get_overwrite_behavior()
         local overwrite_constants = get_overwrite_behavior_constants()
-        
-        if current_overwrite_behavior == overwrite_constants.SUM then
-            handle_sum_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.REPLACE then
-            handle_replace_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
-            handle_substitute_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.RETAIN then
-            handle_retain_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.EXCLUDE then
-            handle_exclude_overwrite(placement_info, track, pattern)
-        elseif current_overwrite_behavior == overwrite_constants.INTERSECT then
-            handle_intersect_overwrite(placement_info, track, pattern)
-        else
-            -- Fall back to sum behavior for unknown options
-            handle_sum_overwrite(placement_info, track, pattern)
-        end
-    else
-        -- Fallback if overwrite behavior functions not available (maintain backward compatibility)
-        handle_sum_overwrite(placement_info, track, pattern)
+        use_sum_behavior = (current_overwrite_behavior == overwrite_constants.SUM or 
+                           current_overwrite_behavior == overwrite_constants.REPLACE)
+        -- SUBSTITUTE and RETAIN use column-aware logic, EXCLUDE and INTERSECT use multi-column logic
     end
     
-    -- UPDATED: Place each note (updated logic to handle different overwrite behaviors including substitute, retain, exclude, and intersect)
+    -- UPDATED: Place each note with multi-column support
+    -- Phase 5: Use target track from note data for multi-track placement
     for _, note in ipairs(placement_info.notes) do
         if note.line >= 1 and note.line <= pattern.number_of_lines then
-            local line = track:line(note.line)
-            local note_column = line:note_column(1)
+            -- Phase 5: Get the correct track for this note
+            local note_target_track_index = get_target_track_index(note)
+            local note_track = pattern:track(note_target_track_index)
+            local line = note_track:line(note.line)
             
-            -- Get current overwrite behavior to determine placement strategy
-            local use_replace_behavior = false
-            local use_substitute_behavior = false
-            local use_retain_behavior = false
-            local use_exclude_behavior = false
-            local use_intersect_behavior = false
+            
+            -- Determine placement strategy based on overwrite behavior
+            local current_overwrite_behavior = nil
             if get_overwrite_behavior and get_overwrite_behavior_constants then
-                local current_overwrite_behavior = get_overwrite_behavior()
+                current_overwrite_behavior = get_overwrite_behavior()
                 local overwrite_constants = get_overwrite_behavior_constants()
-                use_replace_behavior = (current_overwrite_behavior == overwrite_constants.REPLACE)
-                use_substitute_behavior = (current_overwrite_behavior == overwrite_constants.SUBSTITUTE)
-                use_retain_behavior = (current_overwrite_behavior == overwrite_constants.RETAIN)
-                use_exclude_behavior = (current_overwrite_behavior == overwrite_constants.EXCLUDE)
-                use_intersect_behavior = (current_overwrite_behavior == overwrite_constants.INTERSECT)  -- NEW
-            end
-            
-            if use_replace_behavior or use_substitute_behavior or use_exclude_behavior then
-                -- Replace/Substitute/Exclude behavior: Always place in first column (we've already processed conflicts)
-                note_column.note_value = note.note_value
-                -- Determine instrument value based on instrument source behavior
-                local instrument_value
-                if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                    local current_behavior = get_instrument_source_behavior()
-                    local behavior_constants = get_instrument_source_behavior_constants()
-                    if current_behavior == behavior_constants.CURRENT_SELECTED then
-                        -- Use currently selected instrument (0-based for API)
-                        instrument_value = renoise.song().selected_instrument_index - 1
-                    else
-                        -- Use embedded instrument value (default/fallback behavior)
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                else
-                    -- Fallback if instrument source behavior functions not available
-                    instrument_value = (note.source_instrument_index or 1) - 1
-                end
-                note_column.instrument_value = instrument_value
-                note_column.delay_value = note.delay
-elseif use_intersect_behavior then
-                -- Intersect behavior: Always place new notes, use sum logic for conflicts (opposite of exclude)
-                -- This is identical to sum behavior - place in first column if empty, otherwise try additional columns
-                if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                    note_column.note_value = note.note_value
-                    -- Determine instrument value based on instrument source behavior
-                    local instrument_value
-                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                        local current_behavior = get_instrument_source_behavior()
-                        local behavior_constants = get_instrument_source_behavior_constants()
-                        if current_behavior == behavior_constants.CURRENT_SELECTED then
-                            instrument_value = renoise.song().selected_instrument_index - 1
-                        else
-                            instrument_value = (note.source_instrument_index or 1) - 1
-                        end
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                    note_column.instrument_value = instrument_value
-                    note_column.delay_value = note.delay
-                else
-                    -- Try additional columns if first is occupied (Sum behavior for intersect conflicts)
-                    local placed = false
-                    for col = 2, #line.note_columns do
-                        local alt_column = line:note_column(col)
-                        if alt_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                            alt_column.note_value = note.note_value
-                            -- Determine instrument value based on instrument source behavior
-                            local instrument_value
-                            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                                local current_behavior = get_instrument_source_behavior()
-                                local behavior_constants = get_instrument_source_behavior_constants()
-                                if current_behavior == behavior_constants.CURRENT_SELECTED then
-                                    instrument_value = renoise.song().selected_instrument_index - 1
-                                else
-                                    instrument_value = (note.source_instrument_index or 1) - 1
-                                end
-                            else
-                                instrument_value = (note.source_instrument_index or 1) - 1
-                            end
-                            alt_column.instrument_value = instrument_value
-                            alt_column.delay_value = note.delay
-                            placed = true
-                            break
-                        end
-                    end
+                
+                if current_overwrite_behavior == overwrite_constants.SUBSTITUTE then
+                    -- Use column-aware placement for substitute behavior
+                    local placed_columns, overflow_data = place_column_aware_note_data(line, note, "substitute")
                     
-                    if not placed then
-                        renoise.app():show_warning(string.format(
-                            "Could not place intersect note at line %d - all columns occupied", note.line))
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
                     end
-                end
-            elseif use_retain_behavior then
-                -- Retain behavior: Only place if first column is empty (filtering already done in handler)
-                -- Since we've already filtered in handle_retain_overwrite, we can place directly
-                note_column.note_value = note.note_value
-                -- Determine instrument value based on instrument source behavior
-                local instrument_value
-                if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                    local current_behavior = get_instrument_source_behavior()
-                    local behavior_constants = get_instrument_source_behavior_constants()
-                    if current_behavior == behavior_constants.CURRENT_SELECTED then
-                        instrument_value = renoise.song().selected_instrument_index - 1
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
+                elseif current_overwrite_behavior == overwrite_constants.RETAIN then
+                    -- Use column-aware placement for retain behavior  
+                    local placed_columns, overflow_data = place_column_aware_note_data(line, note, "retain")
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
+                    end
+                elseif use_sum_behavior then
+                    -- Use multi-column placement for SUM, REPLACE behaviors
+                    local placed_columns, overflow_data = place_multi_column_note_data(line, note)
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
                     end
                 else
-                    instrument_value = (note.source_instrument_index or 1) - 1
+                    -- Use multi-column placement for EXCLUDE and INTERSECT behaviors
+                    -- These behaviors have already been processed by their handlers
+                    local placed_columns, overflow_data = place_multi_column_note_data(line, note)
+                    
+                    -- Collect overflow data
+                    for _, overflow_item in ipairs(overflow_data) do
+                        table.insert(all_overflow_data, overflow_item)
+                    end
                 end
-                note_column.instrument_value = instrument_value
-                note_column.delay_value = note.delay
             else
-                -- Sum behavior: Only place if the slot is empty to avoid overwriting existing notes
-                if note_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                    note_column.note_value = note.note_value
-                    -- Determine instrument value based on instrument source behavior
-                    local instrument_value
-                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                        local current_behavior = get_instrument_source_behavior()
-                        local behavior_constants = get_instrument_source_behavior_constants()
-                        if current_behavior == behavior_constants.CURRENT_SELECTED then
-                            instrument_value = renoise.song().selected_instrument_index - 1
-                        else
-                            instrument_value = (note.source_instrument_index or 1) - 1
-                        end
-                    else
-                        instrument_value = (note.source_instrument_index or 1) - 1
-                    end
-                    note_column.instrument_value = instrument_value
-                    note_column.delay_value = note.delay
-                else
-                    -- Try additional columns if first is occupied (Sum behavior)
-                    local placed = false
-                    for col = 2, #line.note_columns do
-                        local alt_column = line:note_column(col)
-                        if alt_column.note_value == renoise.PatternLine.EMPTY_NOTE then
-                            alt_column.note_value = note.note_value
-                            -- Determine instrument value based on instrument source behavior
-                            local instrument_value
-                            if get_instrument_source_behavior and get_instrument_source_behavior_constants then
-                                local current_behavior = get_instrument_source_behavior()
-                                local behavior_constants = get_instrument_source_behavior_constants()
-                                if current_behavior == behavior_constants.CURRENT_SELECTED then
-                                    instrument_value = renoise.song().selected_instrument_index - 1
-                                else
-                                    instrument_value = (note.source_instrument_index or 1) - 1
+                -- Fallback: use multi-column placement
+                local placed_columns, overflow_data = place_multi_column_note_data(line, note)
+                
+                -- Collect overflow data
+                for _, overflow_item in ipairs(overflow_data) do
+                    table.insert(all_overflow_data, overflow_item)
+                end
+            end
+        end
+    end
+    
+    -- Handle overflow if any occurred
+    if #all_overflow_data > 0 then
+        print("DEBUG: Processing " .. #all_overflow_data .. " overflow items")
+        
+        -- Show dialog with callback to handle user choice
+        show_overflow_dialog(#all_overflow_data, function(choice)
+            if choice == "Add Track" then
+                local success, new_track_index = create_overflow_track(song, track_index, all_overflow_data)
+                if success and new_track_index then
+                    -- Place overflow data in the new track
+                    local new_track = pattern:track(new_track_index)
+                    local overflow_notes_placed = 0
+                    
+                    for _, overflow_item in ipairs(all_overflow_data) do
+                        local target_line = new_track:line(overflow_item.line)
+                        
+                        if overflow_item.type == "primary" then
+                            -- Find first available column for primary content
+                            local available_column = find_available_note_column(target_line, 1)
+                            if available_column then
+                                local note_column = target_line:note_column(available_column)
+                                
+                                -- Set note data if present, otherwise leave as empty note
+                                if overflow_item.data.has_note then
+                                    note_column.note_value = overflow_item.data.note_value
+                                    
+                                    -- Apply instrument source behavior
+                                    local instrument_value
+                                    if get_instrument_source_behavior and get_instrument_source_behavior_constants then
+                                        local current_behavior = get_instrument_source_behavior()
+                                        local behavior_constants = get_instrument_source_behavior_constants()
+                                        if current_behavior == behavior_constants.CURRENT_SELECTED then
+                                            instrument_value = renoise.song().selected_instrument_index - 1
+                                        else
+                                            instrument_value = (overflow_item.data.source_instrument_index or 1) - 1
+                                        end
+                                    else
+                                        instrument_value = (overflow_item.data.source_instrument_index or 1) - 1
+                                    end
+                                    note_column.instrument_value = instrument_value
                                 end
-                            else
-                                instrument_value = (note.source_instrument_index or 1) - 1
+                                
+                                -- Always set volume, panning, delay, and effects
+                                if overflow_item.data.volume_value and overflow_item.data.volume_value ~= renoise.PatternLine.EMPTY_VOLUME then
+                                    note_column.volume_value = overflow_item.data.volume_value
+                                end
+                                if overflow_item.data.panning_value and overflow_item.data.panning_value ~= renoise.PatternLine.EMPTY_PANNING then
+                                    note_column.panning_value = overflow_item.data.panning_value
+                                end
+                                note_column.delay_value = overflow_item.data.delay
+                                if overflow_item.data.effect_number_value and overflow_item.data.effect_number_value ~= renoise.PatternLine.EMPTY_EFFECT_NUMBER then
+                                    note_column.effect_number_value = overflow_item.data.effect_number_value
+                                end
+                                if overflow_item.data.effect_amount_value and overflow_item.data.effect_amount_value ~= renoise.PatternLine.EMPTY_EFFECT_AMOUNT then
+                                    note_column.effect_amount_value = overflow_item.data.effect_amount_value
+                                end
+                                overflow_notes_placed = overflow_notes_placed + 1
                             end
-                            alt_column.instrument_value = instrument_value
-                            alt_column.delay_value = note.delay
-                            placed = true
-                            break
+                        elseif overflow_item.type == "note_column" then
+                            -- Find first available column for additional note column
+                            local available_column = find_available_note_column(target_line, 1)
+                            if available_column then
+                                place_note_column_data(target_line:note_column(available_column), overflow_item.data, overflow_item.primary_data)
+                                overflow_notes_placed = overflow_notes_placed + 1
+                            end
                         end
                     end
                     
-                    if not placed then
-                        renoise.app():show_warning(string.format(
-                            "Could not place note at line %d - all columns occupied", note.line))
-                    end
+                    renoise.app():show_status(string.format("BreakFast: Placed %d notes, %d overflow notes in new track '%s'", 
+                        #placement_info.notes - #all_overflow_data, overflow_notes_placed, song:track(new_track_index).name))
+                else
+                    renoise.app():show_error("Failed to create overflow track")
                 end
+            elseif choice == "Truncate" then
+                renoise.app():show_status(string.format("BreakFast: Placed %d notes, truncated %d overflow notes", 
+                    #placement_info.notes - #all_overflow_data, #all_overflow_data))
+            else
+                renoise.app():show_status("BreakFast: Placement cancelled due to overflow")
             end
+        end)
+        
+        -- Return true immediately since overflow handling is now asynchronous
+        return true
+    else
+        -- No overflow, show normal success message
+        local note_count = 0
+        for _, content in ipairs(placement_info.notes) do
+            if content.has_note then
+                note_count = note_count + 1
+            end
+        end
+        
+        if note_count == #placement_info.notes then
+            renoise.app():show_status(string.format("BreakFast: Placed %d notes with multi-column data", #placement_info.notes))
+        else
+            renoise.app():show_status(string.format("BreakFast: Placed %d content lines (%d notes, %d effects/controls) with multi-column data", 
+                #placement_info.notes, note_count, #placement_info.notes - note_count))
         end
     end
     
     return true
 end
+
+
 
 -- Individual symbol placement functions for keybinding (unchanged)
 function editor.place_symbol_a()
