@@ -1,12 +1,9 @@
 -- main.lua - BreakFast Main Entry Point (Phase 5: Multi-Track Support)
-<<<<<<< HEAD
 -- ============================================================================
 -- Module Requires
 -- ============================================================================
 
 -- Existing modules
-=======
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 local vb = renoise.ViewBuilder()
 local labeler = require("labeler")
 local breakpoints = require("breakpoints")
@@ -74,7 +71,6 @@ local multi_track_distance_mode = constants.multi_track_distance_mode
 local color_definitions = colors.definitions
 local color_dropdown_items = colors.dropdown_items
 
-<<<<<<< HEAD
 -- Registry reference (kept in sync with registry module)
 -- Note: Direct mutations to this table require calling registry.save() afterward
 local global_symbol_registry = registry.get()
@@ -84,25 +80,6 @@ local global_symbol_registry = registry.get()
 -- ============================================================================
 -- Note: Preferences are now managed by the state module.
 -- The following functions delegate to the state module for backward compatibility.
-=======
--- UI collapse state
-local ui_collapsed = false
-
--- Right column collapse state
-local right_column_collapsed = false
-
--- Store formatted labels at module level for pagination access
-local current_formatted_labels = {}
-
--- Overflow behavior constants and state
-local overflow_behavior = {
-    EXTEND = 1,
-    NEXT_PATTERN = 2,
-    TRUNCATE = 3,
-    LOOP = 4,
-    INSERT = 5  -- Always inserts a new pattern after current, moves overflow there
-}
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 
 -- Preference accessor functions for labeler module (delegating to state)
 function get_custom_labels_data()
@@ -125,405 +102,26 @@ function get_show_advanced_data()
     return state.get_show_advanced_data()
 end
 
-<<<<<<< HEAD
 function save_show_advanced_data(value)
     state.save_show_advanced_data(value)
 end
 
 -- Pagination state (delegating to symbol_grid module)
-=======
--- Phase 5: Multi-track distance mode constants and state
-local multi_track_distance_mode = {
-    SYNC_FIRST = 1,    -- Sync all tracks to first track's cutoff distance (shortest)
-    INDEPENDENT = 2,   -- Each track calculates its own distance independently
-    SYNC_LAST = 3      -- Sync all tracks to last track's cutoff distance (longest, no extra notes captured)
-}
-
-local current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
-
--- Ignore blank tracks at capture setting
--- When enabled: empty tracks in selection are ignored
--- When disabled (default): empty tracks get phantom note entries for proper cross-symbol chaining
-local current_ignore_blank_tracks = false
-
--- Input lock state and callback
-local input_lock_active = false
-local current_dialog_vb = nil
-
--- Symbol button feedback tracking
-local symbol_button_refs = {} -- Store references to symbol buttons for highlighting
-
--- Tag system state
-local category_view_enabled = false  -- Toggle state for category view button (keep same name for UI compatibility)
-local tag_editing_states = {}       -- Track which symbols have saved tags: symbol -> {tag_index -> boolean}
-local color_editing_states = {}     -- Track which symbols have saved colors: symbol -> boolean
-
--- Organize system state
-local organize_view_enabled = false  -- Toggle state for organize view button (default off)
-
--- Detailed view state
-local detailed_view_enabled = false  -- Toggle state for detailed view button (default off)
-local expanded_symbol = nil          -- Track which symbol is currently expanded
-
--- Phase 4: Dictionary view state
-local dictionary_view_enabled = false  -- Toggle state for dictionary view button (default off)
-
--- Symbol labeler view state
-local label_view_enabled = false  -- Toggle state for label view button (default off)
-
--- Phase 4: Symbol Dictionaries data structure
--- symbol_dictionaries[dict_name] = {
---     name = string,
---     color = string (from color_definitions),
---     symbols = array (ordered),
---     created_at = timestamp,
---     description = string
--- }
-local symbol_dictionaries = {}
-local symbol_to_dictionary_cache = {}  -- Reverse lookup cache: symbol -> dict_name
-
--- Global symbol registry for cross-instrument symbol management
-local global_symbol_registry = {}
-local available_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-
--- Color definitions for symbol color coding (Using Matched Saturation Hex and 35% Darker OKHSL)
-local color_definitions = {
-  [""] = {original = nil, darker = nil}, -- No color
-  ["Green"] = {original = {0x9d, 0xeb, 0x6d}, darker = {0x40, 0x89, 0x00}},
-  ["Pink"] = {original = {0xf5, 0x72, 0xb2}, darker = {0x9d, 0x1d, 0x66}},
-  ["Purple"] = {original = {0xb5, 0x72, 0xf5}, darker = {0x6d, 0x24, 0xa5}},
-  ["Blue"] = {original = {0x71, 0xb2, 0xf2}, darker = {0x1f, 0x62, 0x9c}},
-  ["Yellow"] = {original = {0xdd, 0xdd, 0x67}, darker = {0x7e, 0x7c, 0x00}},
-  ["Orange"] = {original = {0xef, 0xb0, 0x6f}, darker = {0x93, 0x5a, 0x10}},
-  ["Red"] = {original = {0xf5, 0x72, 0x72}, darker = {0x9f, 0x20, 0x2b}}
-}
-
--- Color dropdown items (ordered list for popup)
-local color_dropdown_items = {"", "Green", "Pink", "Purple", "Blue", "Yellow", "Orange", "Red"}
-
--- Color editing states (similar to category system)
-local color_editing_states = {}
-
--- Set up tool preferences for global symbol registry persistence (declare early)
-local preferences = renoise.Document.create("BreakFastPreferences") {
-    -- Use a simple string-based storage approach to avoid nested table issues
-    global_symbol_registry_data = "",
-    custom_labels_data = "",      -- User-defined custom labels (JSON array)
-    show_label2 = false,          -- Toggle state for Label 2 column visibility
-    show_advanced_data = false,   -- Toggle state for Advanced Data columns visibility
-    symbol_dictionaries_data = "" -- Phase 4: Dictionary persistence
-}
-
-renoise.tool().preferences = preferences
-
--- Preference accessor functions for labeler module
-function get_custom_labels_data()
-    if preferences.custom_labels_data and preferences.custom_labels_data.value ~= "" then
-        return preferences.custom_labels_data.value
-    end
-    return ""
-end
-
-function save_custom_labels_data(data)
-    preferences.custom_labels_data.value = data
-end
-
-function get_show_label2()
-    if preferences.show_label2 then
-        return preferences.show_label2.value
-    end
-    return false
-end
-
-function save_show_label2(value)
-    if preferences.show_label2 then
-        preferences.show_label2.value = value
-    end
-end
-
-function get_show_advanced_data()
-    if preferences.show_advanced_data then
-        return preferences.show_advanced_data.value
-    end
-    return false
-end
-
-function save_show_advanced_data(value)
-    if preferences.show_advanced_data then
-        preferences.show_advanced_data.value = value
-    end
-end
-
--- Initialization flag
-local tool_initialized = false
-
--- Pagination state for symbol grid
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 local symbol_pagination = {
     current_page = 1,
     symbols_per_page = 12,
     total_pages = 1
 }
 
-<<<<<<< HEAD
 -- Audio preview state (delegating to preview module)
 local preview_state = preview.get_state()
 
 -- Serialize table function (now in utils module)
-=======
--- Phase 2: Audio preview state management
-local preview_state = {
-    active = false,
-    instrument_index = nil,
-    track_index = nil,
-    notes = {},  -- List of {note_value, instrument_index} for active preview
-    symbol = nil
-}
-
--- Serialize a table to a string (simple implementation)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 local function serialize_table(t, indent)
     return utils.serialize_table(t, indent)
 end
 
 -- ============================================================================
-<<<<<<< HEAD
--- Phase 4: Dictionary Management Dialog
--- ============================================================================
-=======
--- Phase 4: Dictionary CRUD Functions
--- ============================================================================
-
--- Rebuild the symbol_to_dictionary_cache from dictionaries
-local function rebuild_dictionary_cache()
-    symbol_to_dictionary_cache = {}
-    for dict_name, dict_data in pairs(symbol_dictionaries) do
-        if dict_data.symbols then
-            for _, symbol in ipairs(dict_data.symbols) do
-                symbol_to_dictionary_cache[symbol] = dict_name
-            end
-        end
-    end
-    print("DEBUG: Rebuilt dictionary cache with " .. table.count(symbol_to_dictionary_cache) .. " symbol mappings")
-end
-
--- Load dictionaries from preferences
-local function load_dictionaries()
-    if preferences.symbol_dictionaries_data and preferences.symbol_dictionaries_data.value ~= "" then
-        local success, loaded_dictionaries = pcall(loadstring("return " .. preferences.symbol_dictionaries_data.value))
-        if success and loaded_dictionaries then
-            symbol_dictionaries = loaded_dictionaries
-            rebuild_dictionary_cache()
-            print("DEBUG: Loaded " .. table.count(symbol_dictionaries) .. " dictionaries")
-        else
-            print("DEBUG: Failed to load dictionaries, starting with empty")
-            symbol_dictionaries = {}
-        end
-    else
-        print("DEBUG: No saved dictionaries found")
-        symbol_dictionaries = {}
-    end
-end
-
--- Save dictionaries to preferences
-local function save_dictionaries()
-    local serialized = serialize_table(symbol_dictionaries)
-    preferences.symbol_dictionaries_data.value = serialized
-    rebuild_dictionary_cache()
-    print("DEBUG: Saved " .. table.count(symbol_dictionaries) .. " dictionaries")
-end
-
--- Create a new dictionary
-local function create_dictionary(name, color, description)
-    if not name or name == "" then
-        return false, "Dictionary name cannot be empty"
-    end
-    if symbol_dictionaries[name] then
-        return false, "Dictionary '" .. name .. "' already exists"
-    end
-    
-    symbol_dictionaries[name] = {
-        name = name,
-        color = color or "",
-        symbols = {},
-        created_at = os.time(),
-        description = description or ""
-    }
-    
-    save_dictionaries()
-    print("DEBUG: Created dictionary '" .. name .. "'")
-    return true
-end
-
--- Rename a dictionary
-local function rename_dictionary(old_name, new_name)
-    if not symbol_dictionaries[old_name] then
-        return false, "Dictionary '" .. old_name .. "' not found"
-    end
-    if old_name == new_name then
-        return true -- No change needed
-    end
-    if symbol_dictionaries[new_name] then
-        return false, "Dictionary '" .. new_name .. "' already exists"
-    end
-    
-    -- Copy data to new name
-    symbol_dictionaries[new_name] = symbol_dictionaries[old_name]
-    symbol_dictionaries[new_name].name = new_name
-    
-    -- Remove old entry
-    symbol_dictionaries[old_name] = nil
-    
-    save_dictionaries()
-    print("DEBUG: Renamed dictionary '" .. old_name .. "' to '" .. new_name .. "'")
-    return true
-end
-
--- Set dictionary color
-local function set_dictionary_color(dict_name, color)
-    if not symbol_dictionaries[dict_name] then
-        return false, "Dictionary '" .. dict_name .. "' not found"
-    end
-    
-    symbol_dictionaries[dict_name].color = color or ""
-    save_dictionaries()
-    print("DEBUG: Set color '" .. (color or "") .. "' for dictionary '" .. dict_name .. "'")
-    return true
-end
-
--- Set dictionary description
-local function set_dictionary_description(dict_name, description)
-    if not symbol_dictionaries[dict_name] then
-        return false, "Dictionary '" .. dict_name .. "' not found"
-    end
-    
-    symbol_dictionaries[dict_name].description = description or ""
-    save_dictionaries()
-    return true
-end
-
--- Delete a dictionary (symbols become ungrouped)
-local function delete_dictionary(dict_name)
-    if not symbol_dictionaries[dict_name] then
-        return false, "Dictionary '" .. dict_name .. "' not found"
-    end
-    
-    symbol_dictionaries[dict_name] = nil
-    save_dictionaries()
-    print("DEBUG: Deleted dictionary '" .. dict_name .. "'")
-    return true
-end
-
--- Add a symbol to a dictionary (removes from any existing dictionary first)
-local function add_symbol_to_dictionary(symbol, dict_name)
-    if not symbol_dictionaries[dict_name] then
-        return false, "Dictionary '" .. dict_name .. "' not found"
-    end
-    
-    -- Remove from any existing dictionary first
-    for name, dict_data in pairs(symbol_dictionaries) do
-        if dict_data.symbols then
-            for i, s in ipairs(dict_data.symbols) do
-                if s == symbol then
-                    table.remove(dict_data.symbols, i)
-                    break
-                end
-            end
-        end
-    end
-    
-    -- Add to new dictionary
-    table.insert(symbol_dictionaries[dict_name].symbols, symbol)
-    
-    save_dictionaries()
-    print("DEBUG: Added symbol '" .. symbol .. "' to dictionary '" .. dict_name .. "'")
-    return true
-end
-
--- Remove a symbol from its current dictionary
-local function remove_symbol_from_current_dictionary(symbol)
-    local current_dict = symbol_to_dictionary_cache[symbol]
-    if not current_dict then
-        return true -- Already not in any dictionary
-    end
-    
-    local dict_data = symbol_dictionaries[current_dict]
-    if dict_data and dict_data.symbols then
-        for i, s in ipairs(dict_data.symbols) do
-            if s == symbol then
-                table.remove(dict_data.symbols, i)
-                save_dictionaries()
-                print("DEBUG: Removed symbol '" .. symbol .. "' from dictionary '" .. current_dict .. "'")
-                return true
-            end
-        end
-    end
-    
-    return true
-end
-
--- Get the dictionary name for a symbol (nil if ungrouped)
-local function get_dictionary_for_symbol(symbol)
-    return symbol_to_dictionary_cache[symbol]
-end
-
--- Get dictionary data by name
-local function get_dictionary_data(dict_name)
-    return symbol_dictionaries[dict_name]
-end
-
--- Get all dictionary names (sorted alphabetically)
-local function get_all_dictionaries()
-    local names = {}
-    for name, _ in pairs(symbol_dictionaries) do
-        table.insert(names, name)
-    end
-    table.sort(names)
-    return names
-end
-
--- Get symbols ordered by dictionary (for dictionary view)
--- Returns: array of {symbol = string, dictionary = string or nil}
-local function get_symbols_ordered_by_dictionary()
-    local result = {}
-    local used_symbols = {}
-    
-    -- First, add symbols from each dictionary in order
-    local dict_names = get_all_dictionaries()
-    for _, dict_name in ipairs(dict_names) do
-        local dict_data = symbol_dictionaries[dict_name]
-        if dict_data and dict_data.symbols then
-            for _, symbol in ipairs(dict_data.symbols) do
-                table.insert(result, {symbol = symbol, dictionary = dict_name})
-                used_symbols[symbol] = true
-            end
-        end
-    end
-    
-    -- Then add ungrouped symbols
-    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-    for _, symbol in ipairs(all_symbols) do
-        if not used_symbols[symbol] then
-            table.insert(result, {symbol = symbol, dictionary = nil})
-        end
-    end
-    
-    return result
-end
-
--- Toggle dictionary view mode
-local function toggle_dictionary_view()
-    dictionary_view_enabled = not dictionary_view_enabled
-    print("DEBUG: Dictionary view " .. (dictionary_view_enabled and "enabled" or "disabled"))
-    return dictionary_view_enabled
-end
-
--- Get dictionary view state
-local function is_dictionary_view_enabled()
-    return dictionary_view_enabled
-end
-
--- ============================================================================
 -- Phase 4: Dictionary Management Dialog
 -- ============================================================================
 
@@ -537,336 +135,6 @@ local function show_dictionary_management_dialog()
         dictionary_dialog:close()
     end
     
-    -- Build the dictionary list dynamically
-    local function build_dictionary_list()
-        local dict_names = get_all_dictionaries()
-        local list_column = vb:column {
-            id = "dictionary_list_container",
-            spacing = 5,
-            width = 400
-        }
-        
-        if #dict_names == 0 then
-            list_column:add_child(vb:text {
-                text = "No dictionaries created yet.",
-                style = "disabled"
-            })
-        else
-            for _, dict_name in ipairs(dict_names) do
-                local dict_data = get_dictionary_data(dict_name)
-                local symbol_count = dict_data.symbols and #dict_data.symbols or 0
-                local color_name = dict_data.color or ""
-                
-                -- Create row for this dictionary
-                local dict_row = vb:row {
-                    spacing = 5,
-                    
-                    -- Color indicator (using text with color name)
-                    vb:text {
-                        text = color_name ~= "" and "[" .. color_name:sub(1,1) .. "]" or "[ ]",
-                        width = 30,
-                        style = color_name ~= "" and "strong" or "disabled"
-                    },
-                    
-                    -- Dictionary name
-                    vb:text {
-                        text = dict_name,
-                        width = 120,
-                        style = "strong"
-                    },
-                    
-                    -- Symbol count
-                    vb:text {
-                        text = "(" .. symbol_count .. " symbols)",
-                        width = 80,
-                        style = "disabled"
-                    },
-                    
-                    -- Color dropdown
-                    vb:popup {
-                        width = 70,
-                        items = color_dropdown_items,
-                        value = (function()
-                            for i, c in ipairs(color_dropdown_items) do
-                                if c == color_name then return i end
-                            end
-                            return 1
-                        end)(),
-                        notifier = function(new_index)
-                            set_dictionary_color(dict_name, color_dropdown_items[new_index])
-                            renoise.app():show_status("Color updated for '" .. dict_name .. "'")
-                        end
-                    },
-                    
-                    -- Rename button
-                    vb:button {
-                        text = "Rename",
-                        width = 55,
-                        notifier = function()
-                            local new_name = renoise.app():prompt_for_string("Rename Dictionary", dict_name, "Enter new name:")
-                            if new_name and new_name ~= "" and new_name ~= dict_name then
-                                local success, err = rename_dictionary(dict_name, new_name)
-                                if success then
-                                    renoise.app():show_status("Renamed to '" .. new_name .. "'")
-                                    -- Refresh dialog
-                                    if dictionary_dialog then dictionary_dialog:close() end
-                                    show_dictionary_management_dialog()
-                                else
-                                    renoise.app():show_error(err or "Failed to rename dictionary")
-                                end
-                            end
-                        end
-                    },
-                    
-                    -- Delete button
-                    vb:button {
-                        text = "X",
-                        width = 25,
-                        notifier = function()
-                            local confirm = renoise.app():show_prompt(
-                                "Delete Dictionary",
-                                "Delete '" .. dict_name .. "'? Symbols will become ungrouped.",
-                                {"Delete", "Cancel"}
-                            )
-                            if confirm == "Delete" then
-                                delete_dictionary(dict_name)
-                                renoise.app():show_status("Deleted '" .. dict_name .. "'")
-                                -- Refresh dialog
-                                if dictionary_dialog then dictionary_dialog:close() end
-                                show_dictionary_management_dialog()
-                            end
-                        end
-                    }
-                }
-                
-                list_column:add_child(dict_row)
-            end
-        end
-        
-        return list_column
-    end
-    
-    -- Main dialog content
-    local dialog_content = vb:column {
-        margin = 10,
-        spacing = 10,
-        
-        -- Header
-        vb:text {
-            text = "Dictionary Management",
-            font = "big",
-            style = "strong"
-        },
-        
-        vb:text {
-            text = "Organize symbols into named groups with optional colors.",
-            style = "disabled"
-        },
-        
-        -- Separator
-        vb:space { height = 5 },
-        
-        -- Create new dictionary section
-        vb:row {
-            spacing = 5,
-            
-            vb:text {
-                text = "New:",
-                width = 35
-            },
-            
-            vb:textfield {
-                id = "new_dict_name",
-                width = 150,
-                text = ""
-            },
-            
-            vb:popup {
-                id = "new_dict_color",
-                width = 70,
-                items = color_dropdown_items,
-                value = 1
-            },
-            
-            vb:button {
-                text = "Create",
-                width = 60,
-                notifier = function()
-                    local name = vb.views.new_dict_name.text
-                    local color_index = vb.views.new_dict_color.value
-                    local color = color_dropdown_items[color_index]
-                    
-                    if name and name ~= "" then
-                        local success, err = create_dictionary(name, color, "")
-                        if success then
-                            renoise.app():show_status("Created dictionary '" .. name .. "'")
-                            -- Refresh dialog
-                            if dictionary_dialog then dictionary_dialog:close() end
-                            show_dictionary_management_dialog()
-                        else
-                            renoise.app():show_error(err or "Failed to create dictionary")
-                        end
-                    else
-                        renoise.app():show_error("Please enter a dictionary name")
-                    end
-                end
-            }
-        },
-        
-        -- Separator
-        vb:space { height = 5 },
-        vb:text {
-            text = "Existing Dictionaries:",
-            style = "strong"
-        },
-        
-        -- Dictionary list
-        build_dictionary_list(),
-        
-        -- Separator
-        vb:space { height = 10 },
-        
-        -- Close button
-        vb:row {
-            vb:button {
-                text = "Close",
-                width = 80,
-                notifier = function()
-                    if dictionary_dialog then
-                        dictionary_dialog:close()
-                    end
-                end
-            }
-        }
-    }
-    
-    dictionary_dialog = renoise.app():show_custom_dialog("Dictionaries", dialog_content)
-end
-
--- Input lock visual update callback
-local function update_input_lock_visual(is_active)
-    input_lock_active = is_active
-    
-    -- Update dialog if it exists and has the input lock indicator
-    if current_dialog_vb and current_dialog_vb.views.input_lock_status then
-        if is_active then
-            current_dialog_vb.views.input_lock_status.text = "INPUT LOCK ACTIVE"
-            current_dialog_vb.views.input_lock_status.style = "strong"
-        else
-            current_dialog_vb.views.input_lock_status.text = "Input Lock"
-            current_dialog_vb.views.input_lock_status.style = "normal"
-        end
-    end
-    
-    if current_dialog_vb and current_dialog_vb.views.input_lock_description then
-        if is_active then
-            current_dialog_vb.views.input_lock_description.text = "Type symbol keys (A-T, 0-9) or ESC to exit"
-            current_dialog_vb.views.input_lock_description.style = "italic"
-        else
-            current_dialog_vb.views.input_lock_description.text = "Double-press Ctrl to activate"
-            current_dialog_vb.views.input_lock_description.style = "italic"
-        end
-    end
-    
-    -- Update compact input lock indicator if it exists
-    if current_dialog_vb and current_dialog_vb.views.compact_input_lock_indicator then
-        if is_active then
-            current_dialog_vb.views.compact_input_lock_indicator.text = "[-]"
-            current_dialog_vb.views.compact_input_lock_indicator.style = "strong"
-        else
-            current_dialog_vb.views.compact_input_lock_indicator.text = "[O]"
-            current_dialog_vb.views.compact_input_lock_indicator.style = "normal"
-        end
-    end
-end
-
--- Input lock visual update callback
-local function update_input_lock_visual(is_active)
-    input_lock_active = is_active
-    
-    -- Update dialog if it exists and has the input lock indicator
-    if current_dialog_vb and current_dialog_vb.views.input_lock_status then
-        if is_active then
-            current_dialog_vb.views.input_lock_status.text = "INPUT LOCK ACTIVE"
-            current_dialog_vb.views.input_lock_status.style = "strong"
-        else
-            current_dialog_vb.views.input_lock_status.text = "Input Lock"
-            current_dialog_vb.views.input_lock_status.style = "normal"
-        end
-    end
-    
-    if current_dialog_vb and current_dialog_vb.views.input_lock_description then
-        if is_active then
-            current_dialog_vb.views.input_lock_description.text = "Type symbol keys (A-T, 0-9) or ESC to exit"
-            current_dialog_vb.views.input_lock_description.style = "disabled"
-        else
-            current_dialog_vb.views.input_lock_description.text = "Double-press Ctrl to activate"
-            current_dialog_vb.views.input_lock_description.style = "disabled"
-        end
-    end
-    
-    -- Update compact input lock indicator if it exists
-    if current_dialog_vb and current_dialog_vb.views.compact_input_lock_indicator then
-        if is_active then
-            current_dialog_vb.views.compact_input_lock_indicator.text = "[-]"
-            current_dialog_vb.views.compact_input_lock_indicator.style = "strong"
-        else
-            current_dialog_vb.views.compact_input_lock_indicator.text = "[O]"
-            current_dialog_vb.views.compact_input_lock_indicator.style = "normal"
-        end
-    end
-end
-
--- Symbol button feedback callback
-local function update_symbol_feedback(symbol, is_highlighted)
-    if not current_dialog_vb or not symbol_button_refs[symbol] then
-        return
-    end
-    
-    local button = symbol_button_refs[symbol]
-    if is_highlighted then
-        -- Highlight the button (make it appear pressed/active)
-        local symbol_color = get_symbol_color(symbol)
-        if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
-            -- Use original (brighter) color when pressed
-            button.color = color_definitions[symbol_color].original
-        else
-            -- Yellow highlight for symbols without custom colors
-            button.color = {0xFF, 0xFF, 0x00}
-        end
-    else
-        -- Return to normal appearance
-        local symbol_color = get_symbol_color(symbol)
-        if symbol_color and symbol_color ~= "" and color_definitions[symbol_color] then
-            -- Use darker color for normal state
-            button.color = color_definitions[symbol_color].darker
-        else
-            -- Default theme color for symbols without custom colors
-            button.color = {0x00, 0x00, 0x00}
-        end
-    end
-    
-    print("DEBUG: Symbol button " .. symbol .. " feedback: " .. (is_highlighted and "highlighted" or "normal"))
-end
-
-
--- Global symbol registry management functions
-function get_global_symbol_registry()
-    return global_symbol_registry
-end
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
-
-local dictionary_dialog = nil  -- Reference to dictionary management dialog
-
-local function show_dictionary_management_dialog()
-    local vb = renoise.ViewBuilder()
-    
-    -- Close existing dialog if open
-    if dictionary_dialog and dictionary_dialog.visible then
-        dictionary_dialog:close()
-    end
-    
-<<<<<<< HEAD
     -- Build the dictionary list dynamically
     local function build_dictionary_list()
         local dict_names = dictionaries.get_all_names()
@@ -874,36 +142,6 @@ local function show_dictionary_management_dialog()
             id = "dictionary_list_container",
             spacing = 5,
             width = 400
-=======
-    local available = {}
-    for _, symbol in ipairs(available_symbols) do
-        if not used_symbols[symbol] and #available < num_symbols_needed then
-            table.insert(available, symbol)
-        end
-    end
-    
-    return available
-end
-
-function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels)
-    local num_symbols_needed = #break_sets
-    local available = find_next_available_symbols(num_symbols_needed)
-    
-    if #available < num_symbols_needed then
-        return nil, string.format("Not enough available symbols. Need %d, only %d available.", 
-            num_symbols_needed, #available)
-    end
-    
-    -- Assign symbols to this instrument
-    for i = 1, num_symbols_needed do
-        local symbol = available[i]
-        global_symbol_registry[symbol] = {
-            instrument_index = instrument_index,
-            break_set = break_sets[i],
-            saved_labels = saved_labels,
-            tags = {},      -- Initialize empty tags array
-            color = ""      -- Initialize empty color
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         }
         
         if #dict_names == 0 then
@@ -1103,7 +341,6 @@ function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels
     dictionary_dialog = renoise.app():show_custom_dialog("Dictionaries", dialog_content)
 end
 
-<<<<<<< HEAD
 -- Input lock visual update callback
 local function update_input_lock_visual(is_active)
     input_lock_active = is_active
@@ -1225,141 +462,6 @@ function toggle_tag_view(vb)
         vb.views.category_toggle.text = category_view_enabled and "Tag*" or "Tag"
     end
     
-=======
-function assign_symbols_to_instrument(instrument_index, break_sets, saved_labels)
-    local num_symbols_needed = #break_sets
-    local available = find_next_available_symbols(num_symbols_needed)
-    
-    if #available < num_symbols_needed then
-        return nil, string.format("Not enough available symbols. Need %d, only %d available.", 
-            num_symbols_needed, #available)
-    end
-    
-    -- Assign symbols to this instrument
-    for i = 1, num_symbols_needed do
-        local symbol = available[i]
-        global_symbol_registry[symbol] = {
-            instrument_index = instrument_index,
-            break_set = break_sets[i],
-            saved_labels = saved_labels,
-            tags = {},      -- Initialize empty tags array
-            color = ""      -- Initialize empty color
-        }
-    end
-    
-    return available
-end
-
--- Get available symbols for moving (excluding the current symbol)
-function get_available_symbols_for_moving(current_symbol)
-    local available = {"Select target..."}  -- Default option
-    local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
-    
-    for _, symbol in ipairs(all_symbols) do
-        -- Only include symbols that are not currently in use and not the current symbol
-        if symbol ~= current_symbol and not global_symbol_registry[symbol] then
-            table.insert(available, symbol)
-        end
-    end
-    
-    return available
-end
-
--- Move symbol to a new position
-function move_symbol_to_position(from_symbol, to_symbol, vb)
-    if not global_symbol_registry[from_symbol] then
-        renoise.app():show_warning("Source symbol " .. from_symbol .. " not found in registry")
-        return false
-    end
-    
-    if global_symbol_registry[to_symbol] then
-        renoise.app():show_warning("Target symbol " .. to_symbol .. " is already in use")
-        return false
-    end
-    
-    if from_symbol == to_symbol then
-        renoise.app():show_warning("Cannot move symbol to itself")
-        return false
-    end
-    
-    print("DEBUG: Moving symbol from " .. from_symbol .. " to " .. to_symbol)
-    
-    -- Deep copy symbol data to new position
-    global_symbol_registry[to_symbol] = {}
-    for key, value in pairs(global_symbol_registry[from_symbol]) do
-        if type(value) == "table" then
-            global_symbol_registry[to_symbol][key] = {}
-            for k, v in pairs(value) do
-                if type(v) == "table" then
-                    global_symbol_registry[to_symbol][key][k] = {}
-                    for k2, v2 in pairs(v) do
-                        global_symbol_registry[to_symbol][key][k][k2] = v2
-                    end
-                else
-                    global_symbol_registry[to_symbol][key][k] = v
-                end
-            end
-        else
-            global_symbol_registry[to_symbol][key] = value
-        end
-    end
-    
-    -- Copy editing states to new position
-    if tag_editing_states[from_symbol] then
-        tag_editing_states[to_symbol] = {}
-        for k, v in pairs(tag_editing_states[from_symbol]) do
-            tag_editing_states[to_symbol][k] = v
-        end
-    end
-    if color_editing_states[from_symbol] then
-        color_editing_states[to_symbol] = color_editing_states[from_symbol]
-    end
-    
-    -- Remove from old position
-    global_symbol_registry[from_symbol] = nil
-    
-    -- Clear symbol button reference for old position
-    if symbol_button_refs[from_symbol] then
-        symbol_button_refs[from_symbol] = nil
-    end
-    
-    -- Clear editing states for old position
-    if tag_editing_states[from_symbol] then
-        tag_editing_states[from_symbol] = nil
-    end
-    if color_editing_states[from_symbol] then
-        color_editing_states[from_symbol] = nil
-    end
-    
-    -- Save to preferences
-    save_global_symbol_registry()
-    
-    renoise.app():show_status("Symbol " .. from_symbol .. " moved to " .. to_symbol)
-    print("DEBUG: Symbol move completed successfully")
-    
-    return true
-end
-
-function get_symbol_instrument_mapping(symbol)
-    local registry_entry = global_symbol_registry[symbol]
-    return registry_entry and registry_entry.instrument_index or nil
-end
-
--- Tag system functions
-function toggle_tag_view(vb)
-    -- Preserve any unsaved tag inputs before toggling
-    if current_dialog_vb then
-        preserve_unsaved_tag_inputs(nil, current_dialog_vb)
-    end
-    
-    category_view_enabled = not category_view_enabled  -- Keep same variable name for UI compatibility
-    
-    -- Update toggle button text
-    if vb.views.category_toggle then
-        vb.views.category_toggle.text = category_view_enabled and "Tag*" or "Tag"
-    end
-    
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
     -- Always refresh dialog to rebuild with new width
     if dialog and dialog.visible then
         dialog:close()
@@ -1391,7 +493,6 @@ function format_detailed_symbol_info(symbol)
     local info_lines = {}
     
     -- Box drawing characters (using string.char for proper UTF-8)
-<<<<<<< HEAD
     local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
     local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
     local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
@@ -1399,15 +500,6 @@ function format_detailed_symbol_info(symbol)
     local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ
     local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
     local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
-=======
-    local BOX_TL = string.char(0xE2, 0x95, 0x94)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_TR = string.char(0xE2, 0x95, 0x97)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_H = string.char(0xE2, 0x95, 0x90)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â
-    local BOX_V = string.char(0xE2, 0x94, 0x82)   -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡
-    local BOX_LT = string.char(0xE2, 0x94, 0x9C)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“
-    local BOX_RT = string.char(0xE2, 0x94, 0xA4)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¤
-    local BOX_HL = string.char(0xE2, 0x94, 0x80)  -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
     
     -- Check if symbol exists in global registry
     local symbol_data = global_symbol_registry[symbol]
@@ -2456,8 +1548,6 @@ end
 -- Capture selection with labels - allows user to label notes before capturing
 function capture_selection_with_labels()
     print("DEBUG: Capturing selection with labels")
-<<<<<<< HEAD
-=======
     
     -- Validate selection first
     local success, selection_data = selection.validate_selection()
@@ -2496,1272 +1586,6 @@ function capture_selection_with_labels()
         renoise.app():show_warning("No notes found in selection")
         return false
     end
-    
-    -- Sort by instrument, then note value
-    table.sort(unique_notes_list, function(a, b)
-        if a.instrument_index ~= b.instrument_index then
-            return a.instrument_index < b.instrument_index
-        end
-        return a.note_value < b.note_value
-    end)
-    
-    -- Look up existing labels for each note
-    for _, note_info in ipairs(unique_notes_list) do
-        local saved_labels = labeler.get_labels_for_instrument(note_info.instrument_index)
-        
-        -- Calculate the slice-based key (what labeler uses for sliced samples)
-        -- Slice 1 = note 37, key "01"; Slice 2 = note 38, key "02"
-        local slice_key = nil
-        if note_info.note_value >= 37 then
-            slice_key = string.format("%02X", note_info.note_value - 36)
-        end
-        
-        -- Also try note-based key (for keyzone mappings)
-        local note_key = string.format("%02X", note_info.note_value)
-        
-        -- Try slice key first (most common), then note key
-        local label_data = (slice_key and saved_labels[slice_key]) or saved_labels[note_key] or nil
-        
-        note_info.label = (label_data and label_data.label) or "---------"
-        note_info.label2 = (label_data and label_data.label2) or "---------"
-        note_info.has_existing_label = (label_data ~= nil)
-        
-        -- Advanced data fields
-        note_info.location = (label_data and label_data.location) or "Off-Center"
-        note_info.ghost = (label_data and label_data.ghost) or false
-        note_info.counterstroke = (label_data and label_data.counterstroke) or false
-        note_info.cycle = (label_data and label_data.cycle) or false
-        
-        -- Store the key format that was found (for saving back)
-        note_info.storage_key = (slice_key and saved_labels[slice_key]) and slice_key or note_key
-    end
-    
-    -- Show dialog for labeling
-    show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
-end
-
--- Dialog for capturing selection with labels
-function show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
-    local capture_vb = renoise.ViewBuilder()
-    local capture_dialog = nil
-    
-    -- Get label options from labeler
-    local label_options = labeler.get_all_labels()
-    local show_label2 = get_show_label2()
-    local show_advanced_data = get_show_advanced_data()
-    
-    local column_width = 100
-    local narrow_column = 50
-    local spacing = 5
-    local preview_column_width = 22  -- Phase 6: Preview column
-    local location_column_width = 80
-    local checkbox_column_width = 50
-    
-    -- Function to rebuild the dialog when toggles change
-    local function rebuild_dialog()
-        labeler.stop_slice_preview()
-        if capture_dialog and capture_dialog.visible then
-            capture_dialog:close()
-        end
-        show_capture_with_labels_dialog(unique_notes_list, notes, sel_data)
-    end
-    
-    -- Build header elements dynamically
-    local header_elements = {
-        capture_vb:text { text = "", width = preview_column_width, align = "center" },  -- Preview column header
-        capture_vb:text { text = "Inst", width = narrow_column, font = "bold", align = "center" },
-        capture_vb:text { text = "Note", width = narrow_column, font = "bold", align = "center" },
-        capture_vb:text { text = "Label", width = column_width, font = "bold", align = "center" }
-    }
-    
-    -- Add Label 2 toggle and column
-    if show_label2 then
-        table.insert(header_elements, capture_vb:button {
-            text = "[-]",
-            width = 25,
-            tooltip = "Hide Label 2 column",
-            notifier = function()
-                save_show_label2(false)
-                rebuild_dialog()
-            end
-        })
-        table.insert(header_elements, capture_vb:text { text = "Label 2", width = column_width, font = "bold", align = "center" })
-    else
-        table.insert(header_elements, capture_vb:button {
-            text = "[+]",
-            width = 25,
-            tooltip = "Show Label 2 column",
-            notifier = function()
-                save_show_label2(true)
-                rebuild_dialog()
-            end
-        })
-    end
-    
-    -- Add Status column
-    table.insert(header_elements, capture_vb:text { text = "Status", width = 80, font = "bold", align = "center" })
-    
-    -- Add Advanced Data toggle
-    table.insert(header_elements, capture_vb:button {
-        text = show_advanced_data and "Adv [-]" or "Adv [+]",
-        width = 50,
-        tooltip = show_advanced_data and "Hide Advanced Data columns" or "Show Advanced Data columns",
-        notifier = function()
-            save_show_advanced_data(not show_advanced_data)
-            rebuild_dialog()
-        end
-    })
-    
-    -- Add Advanced Data columns if enabled
-    if show_advanced_data then
-        table.insert(header_elements, capture_vb:text { text = "Location", width = location_column_width, font = "bold", align = "center" })
-        table.insert(header_elements, capture_vb:text { text = "Ghost", width = checkbox_column_width, font = "bold", align = "center" })
-        table.insert(header_elements, capture_vb:text { text = "CStroke", width = checkbox_column_width, font = "bold", align = "center" })
-        table.insert(header_elements, capture_vb:text { text = "Cycle", width = checkbox_column_width, font = "bold", align = "center" })
-    end
-    
-    -- Build header row
-    local header_row = capture_vb:row { spacing = spacing }
-    for _, element in ipairs(header_elements) do
-        header_row:add_child(element)
-    end
-    
-    -- Build the dialog content
-    local dialog_content = capture_vb:column {
-        margin = 10,
-        spacing = spacing,
-        
-        capture_vb:text {
-            text = "Capture Selection with Labels",
-            font = "bold",
-            style = "strong"
-        },
-        
-        capture_vb:text {
-            text = string.format("Found %d unique notes across selection", #unique_notes_list),
-            style = "disabled"
-        },
-        
-        capture_vb:space { height = 5 },
-        
-        -- Header row
-        header_row
-    }
-    
-    -- Add rows for each unique note
-    for i, note_info in ipairs(unique_notes_list) do
-        local status_text = note_info.has_existing_label and "(auto-filled)" or "(no label)"
-        local status_style = note_info.has_existing_label and "normal" or "disabled"
-        
-        -- Phase 6: Create preview button ID
-        local preview_button_id = "capture_preview_" .. i
-        
-        local row_elements = {
-            -- Phase 6: Preview button
-            capture_vb:button {
-                id = preview_button_id,
-                text = "ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¸",
-                width = preview_column_width,
-                tooltip = "Preview this note",
-                notifier = function()
-                    labeler.toggle_slice_preview(
-                        note_info.instrument_index,
-                        note_info.note_value,
-                        preview_button_id,
-                        capture_vb
-                    )
-                end
-            },
-            
-            -- Instrument
-            capture_vb:text {
-                text = note_info.display_instrument,
-                width = narrow_column,
-                align = "center"
-            },
-            
-            -- Note
-            capture_vb:text {
-                text = note_info.display_note,
-                width = narrow_column,
-                align = "center"
-            },
-            
-            -- Label dropdown
-            capture_vb:popup {
-                id = "label_" .. i,
-                items = label_options,
-                width = column_width,
-                value = table.find(label_options, note_info.label) or 1
-            }
-        }
-        
-        -- Spacer for Label 2 toggle button
-        table.insert(row_elements, capture_vb:space { width = 25 })
-        
-        -- Label 2 dropdown (if enabled)
-        if show_label2 then
-            table.insert(row_elements, capture_vb:popup {
-                id = "label2_" .. i,
-                items = label_options,
-                width = column_width,
-                value = table.find(label_options, note_info.label2) or 1
-            })
-        end
-        
-        -- Status
-        table.insert(row_elements, capture_vb:text {
-            text = status_text,
-            width = 80,
-            style = status_style
-        })
-        
-        -- Spacer for Advanced Data toggle button
-        table.insert(row_elements, capture_vb:space { width = 50 })
-        
-        -- Advanced Data fields (when enabled)
-        if show_advanced_data then
-            -- Location dropdown
-            table.insert(row_elements, capture_vb:popup {
-                id = "location_" .. i,
-                items = labeler.location_options,
-                width = location_column_width,
-                value = table.find(labeler.location_options, note_info.location) or 1
-            })
-            
-            -- Ghost checkbox
-            table.insert(row_elements, capture_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                capture_vb:checkbox {
-                    id = "ghost_" .. i,
-                    value = note_info.ghost
-                }
-            })
-            
-            -- Counterstroke checkbox
-            table.insert(row_elements, capture_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                capture_vb:checkbox {
-                    id = "counterstroke_" .. i,
-                    value = note_info.counterstroke
-                }
-            })
-            
-            -- Cycle checkbox
-            table.insert(row_elements, capture_vb:horizontal_aligner {
-                mode = "center",
-                width = checkbox_column_width,
-                capture_vb:checkbox {
-                    id = "cycle_" .. i,
-                    value = note_info.cycle
-                }
-            })
-        end
-        
-        -- Build row from elements
-        local row = capture_vb:row { spacing = spacing }
-        for _, element in ipairs(row_elements) do
-            row:add_child(element)
-        end
-        
-        dialog_content:add_child(row)
-    end
-    
-    -- Add buttons
-    dialog_content:add_child(capture_vb:space { height = 10 })
-    dialog_content:add_child(
-        capture_vb:row {
-            spacing = 10,
-            
-            capture_vb:button {
-                text = "Capture & Save Labels",
-                width = 140,
-                notifier = function()
-                    -- Phase 6: Stop any active preview
-                    labeler.stop_slice_preview()
-                    
-                    -- Collect labels from dialog
-                    local labels_to_save = {}
-                    local current_show_advanced_data = get_show_advanced_data()
-                    
-                    for i, note_info in ipairs(unique_notes_list) do
-                        local label_popup = capture_vb.views["label_" .. i]
-                        local label2_popup = capture_vb.views["label2_" .. i]
-                        
-                        note_info.label = label_popup.items[label_popup.value]
-                        note_info.label2 = show_label2 and label2_popup and label2_popup.items[label2_popup.value] or "---------"
-                        
-                        -- Collect advanced data values
-                        local location_value = note_info.location or "Off-Center"
-                        local ghost_value = note_info.ghost or false
-                        local counterstroke_value = note_info.counterstroke or false
-                        local cycle_value = note_info.cycle or false
-                        
-                        if current_show_advanced_data then
-                            local location_popup = capture_vb.views["location_" .. i]
-                            local ghost_field = capture_vb.views["ghost_" .. i]
-                            local counterstroke_field = capture_vb.views["counterstroke_" .. i]
-                            local cycle_field = capture_vb.views["cycle_" .. i]
-                            
-                            if location_popup then
-                                location_value = labeler.location_options[location_popup.value]
-                            end
-                            if ghost_field then
-                                ghost_value = ghost_field.value
-                            end
-                            if counterstroke_field then
-                                counterstroke_value = counterstroke_field.value
-                            end
-                            if cycle_field then
-                                cycle_value = cycle_field.value
-                            end
-                        end
-                        
-                        -- Group by instrument for saving
-                        if not labels_to_save[note_info.instrument_index] then
-                            labels_to_save[note_info.instrument_index] = {}
-                        end
-                        
-                        -- Use slice-based key for sliced samples (note 37+ = slice keys)
-                        -- This matches what the labeler uses
-                        local save_key
-                        if note_info.note_value >= 37 then
-                            save_key = string.format("%02X", note_info.note_value - 36)  -- Slice key
-                        else
-                            save_key = string.format("%02X", note_info.note_value)  -- Note key
-                        end
-                        
-                        labels_to_save[note_info.instrument_index][save_key] = {
-                            label = note_info.label,
-                            label2 = note_info.label2,
-                            breakpoint = false,
-                            instrument_index = note_info.instrument_index,
-                            note_value = note_info.note_value,
-                            location = location_value,
-                            ghost = ghost_value,
-                            counterstroke = counterstroke_value,
-                            cycle = cycle_value
-                        }
-                    end
-                    
-                    -- Save labels to each instrument
-                    for inst_idx, inst_labels in pairs(labels_to_save) do
-                        -- Merge with existing labels
-                        local existing = labeler.get_labels_for_instrument(inst_idx)
-                        for key, label_data in pairs(inst_labels) do
-                            existing[key] = label_data
-                        end
-                        labeler.store_labels_for_instrument(inst_idx, existing)
-                    end
-                    
-                    -- Close dialog
-                    if capture_dialog and capture_dialog.visible then
-                        capture_dialog:close()
-                    end
-                    
-                    -- Now capture the symbol
-                    capture_selection_as_symbol()
-                end
-            },
-            
-            capture_vb:button {
-                text = "Capture Only",
-                width = 100,
-                notifier = function()
-                    -- Phase 6: Stop any active preview
-                    labeler.stop_slice_preview()
-                    
-                    -- Close dialog and capture without saving labels
-                    if capture_dialog and capture_dialog.visible then
-                        capture_dialog:close()
-                    end
-                    capture_selection_as_symbol()
-                end
-            },
-            
-            capture_vb:button {
-                text = "Cancel",
-                width = 80,
-                notifier = function()
-                    -- Phase 6: Stop any active preview
-                    labeler.stop_slice_preview()
-                    
-                    if capture_dialog and capture_dialog.visible then
-                        capture_dialog:close()
-                    end
-                end
-            }
-        }
-    )
-    
-    capture_dialog = renoise.app():show_custom_dialog("Capture with Labels", dialog_content)
-end
-
--- ============================================================================
--- Phase 2: Audio Preview Functions (API 6.2)
--- ============================================================================
-
--- Timer handle for sequential preview
-local preview_timer_active = false
-
--- Stop any currently playing symbol preview
-function stop_symbol_preview()
-    -- Remove timer if active
-    if preview_timer_active then
-        if renoise.tool():has_timer(preview_timer_callback) then
-            renoise.tool():remove_timer(preview_timer_callback)
-        end
-        preview_timer_active = false
-    end
-    
-    if not preview_state.active then
-        return
-    end
-    
-    local song = renoise.song()
-    if not song then
-        preview_state.active = false
-        preview_state.notes = {}
-        preview_state.symbol = nil
-        return
-    end
-    
-    -- Stop all notes that were triggered
-    for _, note_info in ipairs(preview_state.notes) do
-        local inst_idx = note_info.instrument_index
-        local track_idx = preview_state.track_index or song.selected_track_index
-        local note_val = note_info.note_value
-        
-        -- Use API 6.2 trigger_instrument_note_off
-        pcall(function()
-            song:trigger_instrument_note_off(inst_idx, track_idx, note_val)
-        end)
-    end
-    
-    print("DEBUG: Stopped preview for symbol:", preview_state.symbol or "unknown")
-    
-    -- Reset preview state
-    preview_state.active = false
-    preview_state.instrument_index = nil
-    preview_state.track_index = nil
-    preview_state.notes = {}
-    preview_state.symbol = nil
-    preview_state.scheduled_notes = nil
-    preview_state.current_note_index = nil
-    preview_state.start_time = nil
-end
-
--- Timer callback for sequential note playback
-function preview_timer_callback()
-    if not preview_state.active or not preview_state.scheduled_notes then
-        stop_symbol_preview()
-        return
-    end
-    
-    local song = renoise.song()
-    if not song then
-        stop_symbol_preview()
-        return
-    end
-    
-    local current_time = os.clock()
-    local elapsed = current_time - preview_state.start_time
-    local elapsed_ms = elapsed * 1000
-    
-    -- Check for notes that should be triggered
-    local notes_remaining = false
-    for i, note_info in ipairs(preview_state.scheduled_notes) do
-        if not note_info.triggered then
-            notes_remaining = true
-            if elapsed_ms >= note_info.trigger_time_ms then
-                -- Trigger this note
-                local inst_idx = note_info.instrument_index
-                local track_idx = preview_state.track_index
-                local note_val = note_info.note_value
-                local vol_normalized = note_info.volume_normalized
-                
-                pcall(function()
-                    song:trigger_instrument_note_on(inst_idx, track_idx, note_val, vol_normalized)
-                end)
-                
-                -- Add to active notes for cleanup
-                table.insert(preview_state.notes, {
-                    note_value = note_val,
-                    instrument_index = inst_idx
-                })
-                
-                note_info.triggered = true
-                print("DEBUG: Triggered note", note_val, "inst", inst_idx, "at", elapsed_ms, "ms")
-            end
-        end
-    end
-    
-    -- Check if all notes have been triggered
-    if not notes_remaining then
-        -- Keep timer running briefly to let last notes play, then stop
-        if not preview_state.finishing then
-            preview_state.finishing = true
-            preview_state.finish_time = current_time
-        elseif current_time - preview_state.finish_time > 0.5 then
-            -- 500ms after last note, stop preview
-            stop_symbol_preview()
-        end
-    end
-end
-
--- Preview a symbol (plays notes in sequence with original timing)
-function preview_symbol(symbol_name)
-    -- Stop any existing preview first
-    stop_symbol_preview()
-    
-    local song = renoise.song()
-    if not song then
-        renoise.app():show_warning("No song loaded")
-        return false
-    end
-    
-    -- Check if symbol exists in registry
-    local symbol_data = global_symbol_registry[symbol_name]
-    if not symbol_data then
-        print("DEBUG: Symbol not found in registry:", symbol_name)
-        return false
-    end
-    
-    -- Get current BPM and LPB for timing calculations
-    local bpm = song.transport.bpm
-    local lpb = song.transport.lpb
-    
-    -- Calculate milliseconds per line
-    -- BPM = beats per minute, LPB = lines per beat
-    -- Lines per minute = BPM * LPB
-    -- Seconds per line = 60 / (BPM * LPB)
-    -- Milliseconds per line = 60000 / (BPM * LPB)
-    local ms_per_line = 60000 / (bpm * lpb)
-    
-    -- Delay value 256 = one full line, so ms_per_delay_unit = ms_per_line / 256
-    local ms_per_delay_unit = ms_per_line / 256
-    
-    print("DEBUG: BPM=" .. bpm .. " LPB=" .. lpb .. " ms_per_line=" .. ms_per_line)
-    
-    -- Collect notes with their timing information
-    local scheduled_notes = {}
-    
-    if symbol_data.break_set and symbol_data.break_set.timing then
-        for _, timing in ipairs(symbol_data.break_set.timing) do
-            -- Calculate trigger time for this timing entry
-            local relative_line = timing.relative_line or 1
-            local delay = timing.new_delay or 0
-            
-            -- Time in ms from start: (line - 1) * ms_per_line + delay * ms_per_delay_unit
-            local trigger_time_ms = ((relative_line - 1) * ms_per_line) + (delay * ms_per_delay_unit)
-            
-            -- Get the source instrument index (this is the actual instrument to trigger)
-            -- source_instrument_index is 1-based (Renoise convention)
-            local source_inst_idx = timing.source_instrument_index or symbol_data.instrument_index or 1
-            
-            -- Check if this timing entry has note_columns (multi-column data)
-            if timing.note_columns then
-                for col_idx, col_data in pairs(timing.note_columns) do
-                    if col_data.note_value and 
-                       col_data.note_value ~= renoise.PatternLine.EMPTY_NOTE and
-                       col_data.note_value < 120 and
-                       col_data.instrument_value and
-                       col_data.instrument_value ~= 255 then
-                        -- Calculate the slice trigger note from the instrument_value (slice number)
-                        -- Slice 1 = C#1 (note 37), Slice 2 = D-1 (note 38), etc.
-                        -- Formula: slice_note = 36 + slice_number
-                        local slice_note = 36 + col_data.instrument_value
-                        local volume = col_data.volume_value or 0x80
-                        local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
-                            and 0.5 or (volume / 127)
-                        
-                        table.insert(scheduled_notes, {
-                            note_value = slice_note,
-                            instrument_index = source_inst_idx,
-                            volume_normalized = vol_normalized,
-                            trigger_time_ms = trigger_time_ms,
-                            triggered = false
-                        })
-                        print("DEBUG: Scheduled note (multi-col) slice", col_data.instrument_value, "-> note", slice_note, "inst", source_inst_idx, "at", trigger_time_ms, "ms")
-                    end
-                end
-            -- Fallback to single note_value if no note_columns
-            elseif timing.note_value and 
-                   timing.note_value ~= renoise.PatternLine.EMPTY_NOTE and
-                   timing.note_value < 120 and
-                   timing.instrument_value and
-                   timing.instrument_value ~= 255 then
-                -- Calculate the slice trigger note from the instrument_value (slice number)
-                -- Slice 1 = C#1 (note 37), Slice 2 = D-1 (note 38), etc.
-                -- Formula: slice_note = 36 + slice_number
-                local slice_note = 36 + timing.instrument_value
-                local volume = timing.volume_value or 0x80
-                local vol_normalized = (volume == 255 or volume == renoise.PatternLine.EMPTY_VOLUME) 
-                    and 0.5 or (volume / 127)
-                
-                table.insert(scheduled_notes, {
-                    note_value = slice_note,
-                    instrument_index = source_inst_idx,
-                    volume_normalized = vol_normalized,
-                    trigger_time_ms = trigger_time_ms,
-                    triggered = false
-                })
-                print("DEBUG: Scheduled note (fallback) slice", timing.instrument_value, "-> note", slice_note, "inst", source_inst_idx, "at", trigger_time_ms, "ms")
-            end
-        end
-    end
-    
-    if #scheduled_notes == 0 then
-        print("DEBUG: No valid notes to preview for symbol:", symbol_name)
-        return false
-    end
-    
-    -- Sort by trigger time
-    table.sort(scheduled_notes, function(a, b)
-        return a.trigger_time_ms < b.trigger_time_ms
-    end)
-    
-    -- Add a short delay before the first note (150ms) to allow UI to settle
-    local initial_delay_ms = 150
-    for _, note in ipairs(scheduled_notes) do
-        note.trigger_time_ms = note.trigger_time_ms + initial_delay_ms
-    end
-    
-    -- Set up preview state
-    preview_state.active = true
-    preview_state.track_index = song.selected_track_index
-    preview_state.symbol = symbol_name
-    preview_state.notes = {}  -- Will be filled as notes are triggered
-    preview_state.scheduled_notes = scheduled_notes
-    preview_state.start_time = os.clock()
-    preview_state.finishing = false
-    
-    -- Start timer (10ms interval for responsive timing)
-    if not renoise.tool():has_timer(preview_timer_callback) then
-        renoise.tool():add_timer(preview_timer_callback, 10)
-        preview_timer_active = true
-    end
-    
-    print("DEBUG: Started sequential preview for symbol:", symbol_name, "with", #scheduled_notes, "notes")
-    return true
-end
-
--- Preview a specific sample directly (helper function)
-function preview_sample_direct(instrument_index, sample_index, note_value, volume)
-    local song = renoise.song()
-    if not song then return false end
-    
-    -- Stop any existing preview
-    stop_symbol_preview()
-    
-    local track_idx = song.selected_track_index
-    local vol_normalized = volume and (volume / 127) or 0.5
-    
-    -- Set up preview state for single note
-    preview_state.active = true
-    preview_state.track_index = track_idx
-    preview_state.symbol = nil
-    preview_state.notes = {{
-        note_value = note_value,
-        instrument_index = instrument_index,
-        sample_index = sample_index
-    }}
-    
-    -- Use trigger_sample_note_on for direct sample playback
-    local success = pcall(function()
-        song:trigger_sample_note_on(instrument_index, sample_index, track_idx, note_value, vol_normalized, false)
-    end)
-    
-    return success
-end
-
--- ============================================================================
--- Phase 2: Selection-Based Breakpoint Creation
--- ============================================================================
-
--- Add breakpoints from current pattern selection
-function add_breakpoints_from_selection()
-    print("DEBUG: Adding breakpoints from selection")
-    
-    local song = renoise.song()
-    if not song then
-        renoise.app():show_warning("No song loaded")
-        return false
-    end
-    
-    -- Check for valid selection
-    local sel = song.selection_in_pattern
-    if not sel then
-        renoise.app():show_warning("No selection in pattern. Please select some notes first.")
-        return false
-    end
-    
-    local pattern_index = song.selected_pattern_index
-    local pattern = song.patterns[pattern_index]
-    if not pattern then
-        renoise.app():show_warning("Could not access current pattern")
-        return false
-    end
-    
-    -- Collect unique (instrument_index, note_value) pairs from selection
-    local unique_notes = {}
-    local notes_found = 0
-    
-    for track_idx = sel.start_track, sel.end_track do
-        local track = pattern:track(track_idx)
-        if track then
-            for line_idx = sel.start_line, sel.end_line do
-                local line = track:line(line_idx)
-                if line then
-                    -- Determine column range for this track
-                    local start_col = (track_idx == sel.start_track) and sel.start_column or 1
-                    local end_col = (track_idx == sel.end_track) and sel.end_column or #line.note_columns
-                    
-                    -- Clamp to valid note column range
-                    end_col = math.min(end_col, #line.note_columns)
-                    
-                    for col_idx = start_col, end_col do
-                        local note_col = line:note_column(col_idx)
-                        if note_col and note_col.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-                            local inst_idx = note_col.instrument_value
-                            local note_val = note_col.note_value
-                            
-                            -- Skip OFF notes (120) and invalid instruments
-                            if note_val < 120 and inst_idx ~= 255 then
-                                local key = string.format("%03d_%03d", inst_idx, note_val)
-                                if not unique_notes[key] then
-                                    unique_notes[key] = {
-                                        instrument_index = inst_idx + 1,  -- Convert to 1-based
-                                        note_value = note_val
-                                    }
-                                    notes_found = notes_found + 1
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    if notes_found == 0 then
-        renoise.app():show_warning("No valid notes found in selection")
-        return false
-    end
-    
-    -- Mark each unique note as a breakpoint in labeler data
-    local breakpoints_added = 0
-    
-    for _, note_info in pairs(unique_notes) do
-        local inst_idx = note_info.instrument_index
-        local note_val = note_info.note_value
-        
-        -- Calculate the hex key (same format as labeler uses)
-        -- For sliced instruments: slice 1 = note 37 (C#1), key "01"
-        -- For non-sliced: use note value directly
-        local hex_key
-        if note_val >= 37 then
-            -- Slice-based key (note 37 = slice 1 = "01")
-            hex_key = string.format("%02X", note_val - 36)
-        else
-            -- Root sample or non-sliced
-            hex_key = string.format("%02X", note_val)
-        end
-        
-        -- Get or create label data for this instrument/note
-        local saved_labels = labeler.get_labels_for_instrument(inst_idx)
-        
-        if not saved_labels[hex_key] then
-            -- Create new label entry
-            saved_labels[hex_key] = {
-                label = "---------",
-                label2 = "---------",
-                breakpoint = true,
-                instrument_index = inst_idx,
-                note_value = note_val
-            }
-        else
-            -- Update existing entry to mark as breakpoint
-            saved_labels[hex_key].breakpoint = true
-        end
-        
-        -- Save back to labeler
-        labeler.set_labels_for_instrument(inst_idx, saved_labels)
-        breakpoints_added = breakpoints_added + 1
-        
-        print("DEBUG: Added breakpoint for instrument", inst_idx, "note", note_val, "key", hex_key)
-    end
-    
-    -- Trigger refresh to regenerate symbols
-    if dialog and dialog.visible then
-        -- Preserve tag inputs before refresh
-        if current_dialog_vb then
-            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
-        end
-        dialog:close()
-        show_main_dialog()
-    end
-    
-    renoise.app():show_status(string.format("Added %d breakpoint(s) from selection", breakpoints_added))
-    return true, breakpoints_added
-end
-function load_global_symbol_registry()
-    if preferences.global_symbol_registry_data and preferences.global_symbol_registry_data.value ~= "" then
-        -- Deserialize the registry from string format
-        local success, loaded_registry = pcall(loadstring("return " .. preferences.global_symbol_registry_data.value))
-        if success and loaded_registry then
-            global_symbol_registry = loaded_registry
-            
-            -- Ensure all symbols have tags and color fields (backward compatibility)
-            for symbol, symbol_data in pairs(global_symbol_registry) do
-                -- Convert old category field to tags array
-                if symbol_data.category ~= nil and symbol_data.tags == nil then
-                    symbol_data.tags = symbol_data.category ~= "" and {symbol_data.category} or {}
-                    symbol_data.category = nil  -- Remove old category field
-                end
-                if symbol_data.tags == nil then
-                    symbol_data.tags = {}
-                end
-                if symbol_data.color == nil then
-                    symbol_data.color = ""
-                end
-            end
-            
-            print("DEBUG: Loaded global symbol registry with", table.count(global_symbol_registry), "symbols")
-        else
-            print("DEBUG: Failed to load global symbol registry, starting with empty registry")
-            global_symbol_registry = {}
-        end
-    else
-        print("DEBUG: No saved global symbol registry found, starting with empty registry")
-        global_symbol_registry = {}
-    end
-    
-    -- Initialize tag editing states
-    initialize_tag_editing_states()
-end
-
--- Save global symbol registry to preferences
-function save_global_symbol_registry()
-    -- Serialize the registry to a string
-    local serialized = serialize_table(global_symbol_registry)
-    preferences.global_symbol_registry_data.value = serialized
-    print("DEBUG: Saved global symbol registry with", table.count(global_symbol_registry), "symbols")
-end
-
--- Export global symbol registry to CSV format
-function export_global_alphabet_csv()
-    local filepath = renoise.app():prompt_for_filename_to_write("csv", "Export Global Alphabet (CSV)")
-    if not filepath or filepath == "" then return end
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
-    
-    -- Validate selection first
-    local success, selection_data = selection.validate_selection()
-    if not success then
-        renoise.app():show_warning(selection_data)
-        return false
-    end
-    
-    -- Extract notes from selection
-    local notes, sel_data = selection.extract_notes_from_selection()
-    if not notes then
-        renoise.app():show_warning(sel_data or "Failed to extract notes from selection")
-        return false
-    end
-    
-<<<<<<< HEAD
-    -- Collect unique (instrument_index, note_value) pairs
-    local unique_notes = {}
-    local unique_notes_list = {}
-    
-    for _, note in ipairs(notes) do
-        if note.has_note and note.note_value ~= renoise.PatternLine.EMPTY_NOTE then
-            local key = string.format("%03d_%03d", note.instrument_value, note.note_value)
-            if not unique_notes[key] then
-                unique_notes[key] = true
-                table.insert(unique_notes_list, {
-                    instrument_index = note.instrument_value + 1,  -- Convert to 1-based
-                    note_value = note.note_value,
-                    display_instrument = string.format("%02X", note.instrument_value),
-                    display_note = selection.note_value_to_string(note.note_value)
-=======
-    -- Write CSV header - expanded to include content type and enhanced content detection
-    -- Phase 4: Added Dictionary column
-    -- Updated: Added OriginalLine, OriginalDelay, and TimingBreakpoint for complete timing data
-    file:write("Symbol,Dictionary,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalLine,OriginalDelay,OriginalDistance,TimingBreakpoint,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine\n")
-
-    -- Write data for each symbol
-    for symbol, symbol_data in pairs(global_symbol_registry) do
-        local instrument_index = symbol_data.instrument_index or 1
-        local break_set = symbol_data.break_set
-        local saved_labels = symbol_data.saved_labels or {}
-        local symbol_type = symbol_data.symbol_type or "breakpoint_created"
-        local symbol_color = symbol_data.color or ""
-        local symbol_tags = symbol_data.tags or {}
-        
-        -- Phase 4: Get dictionary for this symbol
-        local symbol_dictionary = get_dictionary_for_symbol(symbol) or ""
-        
-        -- Convert tags array to comma-separated string
-        local tags_string = ""
-        if #symbol_tags > 0 then
-            tags_string = table.concat(symbol_tags, ", ")
-        end
-        
-        print("DEBUG: Exporting symbol " .. symbol .. " (type: " .. symbol_type .. ") with " .. (function()
-            local count = 0
-            for _ in pairs(saved_labels) do count = count + 1 end
-            return count
-        end)() .. " labels, tags: " .. tags_string .. ", color: " .. symbol_color .. ", dictionary: " .. symbol_dictionary)
-        
-        -- Debug: Show available labels for this symbol
-        for hex_key, label_data in pairs(saved_labels) do
-            print("DEBUG:   " .. symbol .. " has label " .. hex_key .. " -> " .. (label_data.label or ""))
-        end
-        
-        -- Extract source metadata for range-captured symbols
-        local source_pattern = ""
-        local source_track = ""
-        local capture_start_line = ""
-        local capture_end_line = ""
-        
-        if symbol_type == "range_captured" and symbol_data.source_metadata then
-            source_pattern = tostring(symbol_data.source_metadata.pattern_index or "")
-            source_track = tostring(symbol_data.source_metadata.track_index or "")
-            if symbol_data.source_metadata.capture_info then
-                capture_start_line = tostring(symbol_data.source_metadata.capture_info.start_line or "")
-                capture_end_line = tostring(symbol_data.source_metadata.capture_info.end_line or "")
-            end
-        end
-        
-        if break_set and break_set.timing then
-            for _, timing in ipairs(break_set.timing) do
-                local slice_index = timing.instrument_value or 0
-                local slice_label = ""
-                local is_breakpoint = false
-                local note_value = timing.note_value or ""
-                
-                -- For range symbols, calculate the hex_key using the same logic as label mapping
-                local hex_key
-                if symbol_type == "range_captured" then
-                    -- Use the same note-to-slice mapping as in selection.lua
-                    local calculated_slice_index = 0
-                    if note_value >= 37 then
-                        calculated_slice_index = note_value - 36
-                    end
-                    hex_key = string.format("%02X", calculated_slice_index + 1)
-                    print("DEBUG: Range symbol " .. symbol .. " note " .. note_value .. " -> slice " .. calculated_slice_index .. " -> hex_key " .. hex_key)
-                else
-                    -- Breakpoint symbols use the instrument_value
-                    hex_key = string.format("%02X", slice_index + 1)
-                end
-                
-                local label_data = saved_labels[hex_key] or {}
-                slice_label = label_data.label or ""
-                is_breakpoint = label_data.breakpoint or false
-                
-                print("DEBUG: Symbol " .. symbol .. " using hex_key " .. hex_key .. " -> label '" .. slice_label .. "'")
-                
-                -- Escape CSV fields - ensure all values are strings and handle nil
-                local function escape_csv_field(field)
-                    -- Convert to string and handle nil values
-                    local str_field = tostring(field or "")
-                    if str_field:find(',') or str_field:find('"') then
-                        return '"' .. str_field:gsub('"', '""') .. '"'
-                    end
-                    return str_field
-                end
-                
-                -- For range-captured symbols, use the actual instrument value from the timing data
-                -- For breakpoint symbols, use the slice_index as before
-                local actual_instrument_value = slice_index
-                if symbol_type == "range_captured" and timing.source_instrument_index then
-                    -- For range symbols, the instrument value should be the 0-based instrument from the pattern
-                    actual_instrument_value = (timing.source_instrument_index - 1)
-                end
-                
-                -- Extract all 8 effect columns data
-                local effect_columns_data = {}
-                if timing.effect_columns then
-                    for fx_col = 1, 8 do
-                        if timing.effect_columns[fx_col] then
-                            table.insert(effect_columns_data, timing.effect_columns[fx_col].number_value or "")
-                            table.insert(effect_columns_data, timing.effect_columns[fx_col].amount_value or "")
-                        else
-                            table.insert(effect_columns_data, "")  -- Empty number value
-                            table.insert(effect_columns_data, "")  -- Empty amount value
-                        end
-                    end
-                else
-                    -- No effect columns data, add 16 empty fields (8 columns x 2 values each)
-                    for fx_col = 1, 16 do
-                        table.insert(effect_columns_data, "")
-                    end
-                end
-
-                -- Extract all 12 note columns data
-                local note_columns_data = {}
-                if timing.note_columns then
-                    for note_col = 1, 12 do
-                        if timing.note_columns[note_col] then
-                            table.insert(note_columns_data, timing.note_columns[note_col].note_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].instrument_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].volume_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].panning_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].delay_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].effect_number_value or "")
-                            table.insert(note_columns_data, timing.note_columns[note_col].effect_amount_value or "")
-                        else
-                            -- Add 7 empty fields for this note column (note, instrument, volume, panning, delay, effect_number, effect_amount)
-                            for field = 1, 7 do
-                                table.insert(note_columns_data, "")
-                            end
-                        end
-                    end
-                else
-                    -- No note columns data, add 84 empty fields (12 columns x 7 values each)
-                    for note_col = 1, 84 do
-                        table.insert(note_columns_data, "")
-                    end
-                end
-
-                local values = {
-                    symbol or "",
-                    symbol_dictionary or "",  -- Phase 4: Dictionary column
-                    symbol_type or "",
-                    tags_string or "",  -- Use comma-separated tags string
-                    symbol_color or "",
-                    instrument_index or "",
-                    actual_instrument_value or "",
-                    slice_label or "",
-                    tostring(is_breakpoint),
-                    timing.relative_line or "",
-                    timing.new_delay or "",
-                    timing.original_line or "",
-                    timing.original_delay or "",
-                    timing.original_distance or "",
-                    tostring(timing.breakpoint or false),  -- Per-timing breakpoint marker
-                    note_value or "",
-                    timing.volume_value or "",
-                    timing.panning_value or "",
-                    timing.effect_number_value or "",
-                    timing.effect_amount_value or "",
-                    -- NEW: Enhanced content information
-                    tostring(timing.has_note or false),
-                    timing.content_type or ""
-                }
-                
-                -- Add all effect columns data
-                for _, fx_data in ipairs(effect_columns_data) do
-                    table.insert(values, fx_data)
-                end
-                
-                -- Add all note columns data
-                for _, note_data in ipairs(note_columns_data) do
-                    table.insert(values, note_data)
-                end
-                
-                -- Add remaining fields
-                table.insert(values, source_pattern)
-                table.insert(values, source_track)
-                table.insert(values, capture_start_line)
-                table.insert(values, capture_end_line)       
-                
-                -- Ensure all values are properly escaped
-                for i, value in ipairs(values) do
-                    values[i] = escape_csv_field(value)
-                end
-                
-                file:write(table.concat(values, ",") .. "\n")
-            end
-        end
-    end
-    
-    file:close()
-    renoise.app():show_status("Global alphabet exported to " .. filepath)
-end
-
--- Export global symbol registry to JSON format
-function export_global_alphabet_json()
-    local filepath = renoise.app():prompt_for_filename_to_write("json", "Export Global Alphabet (JSON)")
-    if not filepath or filepath == "" then return end
-    
-    if not filepath:lower():match("%.json$") then
-        filepath = filepath .. ".json"
-    end
-    
-    local file, err = io.open(filepath, "w")
-    if not file then
-        renoise.app():show_error("Unable to open file for writing: " .. tostring(err))
-        return
-    end
-    
-    -- Build export structure with expanded schema
-    local export_data = {
-        version = "2.0",
-        symbols = {}
-    }
-    
-    for symbol, symbol_data in pairs(global_symbol_registry) do
-        local instrument_index = symbol_data.instrument_index or 1
-        local break_set = symbol_data.break_set
-        local saved_labels = symbol_data.saved_labels or {}
-        local symbol_type = symbol_data.symbol_type or "breakpoint_created"
-        
-        -- Phase 4: Get dictionary for this symbol
-        local symbol_dictionary = get_dictionary_for_symbol(symbol) or ""
-        
-        -- Build symbol entry with all metadata
-        local symbol_entry = {
-            symbol_type = symbol_type,
-            instrument_index = instrument_index,
-            tags = symbol_data.tags or {},  -- Store as array
-            color = symbol_data.color or "",
-            dictionary = symbol_dictionary,  -- Phase 4: Add dictionary
-            notes = {},
-            timing_data = {}
-        }
-        
-        -- Add source metadata for range-captured symbols
-        if symbol_type == "range_captured" and symbol_data.source_metadata then
-            symbol_entry.source_metadata = {
-                pattern_index = symbol_data.source_metadata.pattern_index,
-                track_index = symbol_data.source_metadata.track_index,
-                capture_info = symbol_data.source_metadata.capture_info,
-                -- Phase 5: Multi-track metadata
-                track_count = symbol_data.source_metadata.track_count,
-                first_track_index = symbol_data.source_metadata.first_track_index,
-                track_names = symbol_data.source_metadata.track_names,
-                is_multi_track = symbol_data.source_metadata.is_multi_track
-            }
-        end
-        
-        -- Phase 5: Add break_set level multi-track metadata
-        if break_set then
-            symbol_entry.track_count = break_set.track_count
-            symbol_entry.first_track_index = break_set.first_track_index
-            symbol_entry.track_names = break_set.track_names
-            symbol_entry.is_multi_track = break_set.is_multi_track
-        end
-        
-        -- Add saved labels for both breakpoint and range symbols (range symbols can now have labels too)
-        if saved_labels and next(saved_labels) ~= nil then
-            symbol_entry.saved_labels = saved_labels
-        end
-        
-        if break_set and break_set.timing then
-            for _, timing in ipairs(break_set.timing) do
-                local slice_index = timing.instrument_value or 0
-                local hex_key = string.format("%02X", slice_index + 1)
-                local label_data = saved_labels[hex_key] or {}
-                
-                -- For range-captured symbols, use the actual instrument value from timing data
-                -- For breakpoint symbols, use the slice_index as before
-                local actual_slice_index = slice_index
-                local actual_instrument_value = timing.source_instrument_index or instrument_index
-                
-                if symbol_type == "range_captured" then
-                    -- For range symbols, slice_index should represent the actual instrument value from the pattern
-                    actual_slice_index = (timing.source_instrument_index and (timing.source_instrument_index - 1)) or slice_index
-                end
-                
-                -- Build note entry with comprehensive data
-                local note_entry = {
-                    slice_index = actual_slice_index,
-                    label = label_data.label or "",
-                    breakpoint = label_data.breakpoint or false,
-                    timing_breakpoint = timing.breakpoint or false,  -- Per-timing breakpoint marker
-                    timing_line = timing.relative_line or 1,
-                    timing_delay = timing.new_delay or 0,
-                    original_line = timing.original_line,
-                    original_delay = timing.original_delay,
-                    original_distance = timing.original_distance or 256,
-                    source_instrument_index = actual_instrument_value,
-                    -- NEW: Enhanced content information
-                    has_note = timing.has_note or false,
-                    content_type = timing.content_type or "note"
-                }
-                
-                -- Add note_value for range-captured symbols
-                if timing.note_value then
-                    note_entry.note_value = timing.note_value
-                end
-                
-                -- Add additional timing properties if they exist
-                if timing.volume_value then
-                    note_entry.volume_value = timing.volume_value
-                end
-                if timing.panning_value then
-                    note_entry.panning_value = timing.panning_value
-                end
-                if timing.effect_number_value then
-                    note_entry.effect_number_value = timing.effect_number_value
-                end
-                if timing.effect_amount_value then
-                    note_entry.effect_amount_value = timing.effect_amount_value
-                end
-                
-                -- Add note columns data if available
-                if timing.note_columns then
-                    note_entry.note_columns = timing.note_columns
-                end
-                
-                table.insert(symbol_entry.notes, note_entry)
-                
-                -- Also store raw timing data for exact reconstruction
-                table.insert(symbol_entry.timing_data, {
-                    instrument_value = timing.instrument_value or 0,
-                    relative_line = timing.relative_line or 1,
-                    new_delay = timing.new_delay or 0,
-                    original_line = timing.original_line,
-                    original_delay = timing.original_delay,
-                    original_distance = timing.original_distance or 256,
-                    source_instrument_index = timing.source_instrument_index or instrument_index,
-                    breakpoint = timing.breakpoint or false,  -- Per-timing breakpoint marker
-                    note_value = timing.note_value,
-                    volume_value = timing.volume_value,
-                    panning_value = timing.panning_value,
-                    effect_number_value = timing.effect_number_value,
-                    effect_amount_value = timing.effect_amount_value,
-                    effect_columns = timing.effect_columns or {},
-                    note_columns = timing.note_columns or {},
-                    -- NEW: Enhanced content information
-                    has_note = timing.has_note or false,
-                    content_type = timing.content_type or "note",
-                    -- Phase 5: Multi-track information
-                    track_index = timing.track_index,
-                    track_offset = timing.track_offset or 0
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
-                })
-            end
-        end
-    end
-    
-<<<<<<< HEAD
-    if #unique_notes_list == 0 then
-        renoise.app():show_warning("No notes found in selection")
-        return false
-    end
-=======
-    -- Phase 4: Export dictionaries
-    export_data.dictionaries = {}
-    for dict_name, dict_data in pairs(symbol_dictionaries) do
-        export_data.dictionaries[dict_name] = {
-            name = dict_data.name,
-            color = dict_data.color or "",
-            symbols = dict_data.symbols or {},
-            description = dict_data.description or "",
-            created_at = dict_data.created_at
-        }
-    end
-    
-    -- Write JSON
-    local json_str = json.encode(export_data)
-    file:write(json_str)
-    file:close()
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
     
     -- Sort by instrument, then note value
     table.sort(unique_notes_list, function(a, b)
@@ -4398,867 +2222,6 @@ function export_global_alphabet()
     format_dialog = renoise.app():show_custom_dialog("Export Format", dialog_content)
 end
 
-<<<<<<< HEAD
-=======
--- Import global symbol registry from CSV format
-function import_global_alphabet_csv()
-    local filepath = renoise.app():prompt_for_filename_to_read({"*.csv"}, "Import Global Alphabet (CSV)")
-    if not filepath or filepath == "" then return end
-    
-    local file, err = io.open(filepath, "r")
-    if not file then
-        renoise.app():show_error("Unable to open file: " .. tostring(err))
-        return
-    end
-    
-    -- Read and validate header
-    local header = file:read()
-    if not header then
-        renoise.app():show_error("Invalid CSV format: No header found")
-        file:close()
-        return
-    end
-    
-    -- Parse header to find column positions
-    local function parse_csv_line(line)
-        local fields = {}
-        local field = ""
-        local in_quotes = false
-        
-        local i = 1
-        while i <= #line do
-            local char = line:sub(i,i)
-            
-            if char == '"' then
-                if in_quotes and line:sub(i+1,i+1) == '"' then
-                    field = field .. '"'
-                    i = i + 2
-                else
-                    in_quotes = not in_quotes
-                    i = i + 1
-                end
-            elseif char == ',' and not in_quotes then
-                table.insert(fields, field)
-                field = ""
-                i = i + 1
-            else
-                field = field .. char
-                i = i + 1
-            end
-        end
-        
-        table.insert(fields, field)
-        return fields
-    end
-    
-    local function unescape_csv_field(field)
-        if field:sub(1,1) == '"' and field:sub(-1) == '"' then
-            return field:sub(2, -2):gsub('""', '"')
-        end
-        return field
-    end
-    
-    local header_fields = parse_csv_line(header)
-    local column_positions = {}
-    
-    -- Updated expected columns to include content type fields, all 8 effect columns, and all 12 note columns
-    -- Phase 4: Added dictionary column
-    -- Updated: Added originalline, originaldelay, and timingbreakpoint for complete timing data
-    local expected_columns = {
-        "symbol", "dictionary", "symboltype", "tags", "color", "instrumentindex", "sliceindex", "slicelabel", "isbreakpoint",
-        "timingline", "timingdelay", "originalline", "originaldelay", "originaldistance", "timingbreakpoint",
-        "notevalue", "volumevalue", "panningvalue", 
-        "effectnumber", "effectamount", "hasnote", "contenttype",
-        "effectcolumn1number", "effectcolumn1amount", "effectcolumn2number", "effectcolumn2amount",
-        "effectcolumn3number", "effectcolumn3amount", "effectcolumn4number", "effectcolumn4amount",
-        "effectcolumn5number", "effectcolumn5amount", "effectcolumn6number", "effectcolumn6amount",
-        "effectcolumn7number", "effectcolumn7amount", "effectcolumn8number", "effectcolumn8amount",
-        "notecolumn1note", "notecolumn1instrument", "notecolumn1volume", "notecolumn1panning", "notecolumn1delay", "notecolumn1effectnumber", "notecolumn1effectamount",
-        "notecolumn2note", "notecolumn2instrument", "notecolumn2volume", "notecolumn2panning", "notecolumn2delay", "notecolumn2effectnumber", "notecolumn2effectamount",
-        "notecolumn3note", "notecolumn3instrument", "notecolumn3volume", "notecolumn3panning", "notecolumn3delay", "notecolumn3effectnumber", "notecolumn3effectamount",
-        "notecolumn4note", "notecolumn4instrument", "notecolumn4volume", "notecolumn4panning", "notecolumn4delay", "notecolumn4effectnumber", "notecolumn4effectamount",
-        "notecolumn5note", "notecolumn5instrument", "notecolumn5volume", "notecolumn5panning", "notecolumn5delay", "notecolumn5effectnumber", "notecolumn5effectamount",
-        "notecolumn6note", "notecolumn6instrument", "notecolumn6volume", "notecolumn6panning", "notecolumn6delay", "notecolumn6effectnumber", "notecolumn6effectamount",
-        "notecolumn7note", "notecolumn7instrument", "notecolumn7volume", "notecolumn7panning", "notecolumn7delay", "notecolumn7effectnumber", "notecolumn7effectamount",
-        "notecolumn8note", "notecolumn8instrument", "notecolumn8volume", "notecolumn8panning", "notecolumn8delay", "notecolumn8effectnumber", "notecolumn8effectamount",
-        "notecolumn9note", "notecolumn9instrument", "notecolumn9volume", "notecolumn9panning", "notecolumn9delay", "notecolumn9effectnumber", "notecolumn9effectamount",
-        "notecolumn10note", "notecolumn10instrument", "notecolumn10volume", "notecolumn10panning", "notecolumn10delay", "notecolumn10effectnumber", "notecolumn10effectamount",
-        "notecolumn11note", "notecolumn11instrument", "notecolumn11volume", "notecolumn11panning", "notecolumn11delay", "notecolumn11effectnumber", "notecolumn11effectamount",
-        "notecolumn12note", "notecolumn12instrument", "notecolumn12volume", "notecolumn12panning", "notecolumn12delay", "notecolumn12effectnumber", "notecolumn12effectamount",
-        "sourcepattern", "sourcetrack", "capturestartline", "captureendline"
-    }
-    
-    -- Map header fields to column positions (case insensitive)
-    for i, field in ipairs(header_fields) do
-        local lower_field = field:lower():gsub("%s+", "")
-        for _, expected in ipairs(expected_columns) do
-            if lower_field == expected then
-                column_positions[expected] = i
-                break
-            end
-        end
-    end
-    
-    -- Validate required core columns exist (backwards compatibility check)
-    local required_columns = {"symbol", "instrumentindex", "sliceindex", "timingline", "timingdelay", "originaldistance"}
-    for _, required in ipairs(required_columns) do
-        if not column_positions[required] then
-            renoise.app():show_error("Invalid CSV format: Missing required '" .. required .. "' column")
-            file:close()
-            return
-        end
-    end
-    
-    -- Parse data lines
-    local imported_symbols = {}
-    local line_number = 1
-    
-    for line in file:lines() do
-        line_number = line_number + 1
-        local line_trimmed = line:gsub("^%s*(.-)%s*$", "%1")
-        
-        if line_trimmed ~= "" then  -- Only process non-empty lines
-            local fields = parse_csv_line(line)
-            
-            if #fields >= #required_columns then  -- Only process lines with sufficient core fields
-                -- Extract core fields
-                local symbol = unescape_csv_field(fields[column_positions.symbol] or ""):upper()
-                local symbol_type = unescape_csv_field(fields[column_positions.symboltype] or "breakpoint_created")
-                local tags_string = unescape_csv_field(fields[column_positions.tags] or "")
-                local color = unescape_csv_field(fields[column_positions.color] or "")
-                local instrument_index = tonumber(unescape_csv_field(fields[column_positions.instrumentindex] or "1"))
-                
-                -- Phase 4: Extract dictionary
-                local dictionary = ""
-                if column_positions.dictionary and fields[column_positions.dictionary] then
-                    dictionary = unescape_csv_field(fields[column_positions.dictionary])
-                end
-                
-                -- Parse tags string into array
-                local tags = {}
-                if tags_string and tags_string ~= "" then
-                    -- Split by comma and trim whitespace
-                    for tag in tags_string:gmatch("([^,]+)") do
-                        local trimmed_tag = tag:match("^%s*(.-)%s*$")  -- Trim whitespace
-                        if trimmed_tag and trimmed_tag ~= "" then
-                            table.insert(tags, trimmed_tag)
-                        end
-                    end
-                end
-                local slice_index = tonumber(unescape_csv_field(fields[column_positions.sliceindex] or "0"))
-                local slice_label = unescape_csv_field(fields[column_positions.slicelabel] or "")
-                local is_breakpoint_str = unescape_csv_field(fields[column_positions.isbreakpoint] or "false"):lower()
-                local timing_line = tonumber(unescape_csv_field(fields[column_positions.timingline] or "1"))
-                local timing_delay = tonumber(unescape_csv_field(fields[column_positions.timingdelay] or "0"))
-                local original_line = nil
-                if column_positions.originalline and fields[column_positions.originalline] and fields[column_positions.originalline] ~= "" then
-                    original_line = tonumber(unescape_csv_field(fields[column_positions.originalline]))
-                end
-                local original_delay = nil
-                if column_positions.originaldelay and fields[column_positions.originaldelay] and fields[column_positions.originaldelay] ~= "" then
-                    original_delay = tonumber(unescape_csv_field(fields[column_positions.originaldelay]))
-                end
-                local original_distance = tonumber(unescape_csv_field(fields[column_positions.originaldistance] or "256"))
-                
-                -- Extract new fields with fallbacks
-                local note_value = nil
-                if column_positions.notevalue and fields[column_positions.notevalue] and fields[column_positions.notevalue] ~= "" then
-                    note_value = tonumber(unescape_csv_field(fields[column_positions.notevalue]))
-                end
-                
-                local volume_value = nil
-                if column_positions.volumevalue and fields[column_positions.volumevalue] and fields[column_positions.volumevalue] ~= "" then
-                    volume_value = tonumber(unescape_csv_field(fields[column_positions.volumevalue]))
-                end
-                
-                local panning_value = nil
-                if column_positions.panningvalue and fields[column_positions.panningvalue] and fields[column_positions.panningvalue] ~= "" then
-                    panning_value = tonumber(unescape_csv_field(fields[column_positions.panningvalue]))
-                end
-                
-                local effect_number_value = nil
-                if column_positions.effectnumber and fields[column_positions.effectnumber] and fields[column_positions.effectnumber] ~= "" then
-                    effect_number_value = tonumber(unescape_csv_field(fields[column_positions.effectnumber]))
-                end
-                
-                local effect_amount_value = nil
-                if column_positions.effectamount and fields[column_positions.effectamount] and fields[column_positions.effectamount] ~= "" then
-                    effect_amount_value = tonumber(unescape_csv_field(fields[column_positions.effectamount]))
-                end
-                
-                -- Extract enhanced content information
-                local has_note = true  -- Default to true for backward compatibility
-                if column_positions.hasnote and fields[column_positions.hasnote] and fields[column_positions.hasnote] ~= "" then
-                    has_note = (unescape_csv_field(fields[column_positions.hasnote]):lower() == "true")
-                end
-                
-                local content_type = "note"  -- Default for backward compatibility
-                if column_positions.contenttype and fields[column_positions.contenttype] and fields[column_positions.contenttype] ~= "" then
-                    content_type = unescape_csv_field(fields[column_positions.contenttype])
-                end
-                
-                -- Extract per-timing breakpoint marker
-                local timing_breakpoint = false
-                if column_positions.timingbreakpoint and fields[column_positions.timingbreakpoint] and fields[column_positions.timingbreakpoint] ~= "" then
-                    timing_breakpoint = (unescape_csv_field(fields[column_positions.timingbreakpoint]):lower() == "true")
-                end
-                
-                -- Extract all 8 effect columns data
-                local effect_columns_data = {}
-                for fx_col = 1, 8 do
-                    local number_key = "effectcolumn" .. fx_col .. "number"
-                    local amount_key = "effectcolumn" .. fx_col .. "amount"
-                    
-                    local fx_number = nil
-                    local fx_amount = nil
-                    
-                    if column_positions[number_key] and fields[column_positions[number_key]] and fields[column_positions[number_key]] ~= "" then
-                        fx_number = tonumber(unescape_csv_field(fields[column_positions[number_key]]))
-                    end
-                    
-                    if column_positions[amount_key] and fields[column_positions[amount_key]] and fields[column_positions[amount_key]] ~= "" then
-                        fx_amount = tonumber(unescape_csv_field(fields[column_positions[amount_key]]))
-                    end
-                    
-                    -- Only store effect column data if we have valid values
-                    if fx_number or fx_amount then
-                        effect_columns_data[fx_col] = {
-                            number_value = fx_number,
-                            amount_value = fx_amount
-                        }
-                    end
-                end
-                
-                -- Extract range capture metadata
-                local source_pattern = nil
-                local source_track = nil
-                local capture_start_line = nil
-                local capture_end_line = nil
-                
-                if symbol_type == "range_captured" then
-                    if column_positions.sourcepattern and fields[column_positions.sourcepattern] and fields[column_positions.sourcepattern] ~= "" then
-                        source_pattern = tonumber(unescape_csv_field(fields[column_positions.sourcepattern]))
-                    end
-                    if column_positions.sourcetrack and fields[column_positions.sourcetrack] and fields[column_positions.sourcetrack] ~= "" then
-                        source_track = tonumber(unescape_csv_field(fields[column_positions.sourcetrack]))
-                    end
-                    if column_positions.capturestartline and fields[column_positions.capturestartline] and fields[column_positions.capturestartline] ~= "" then
-                        capture_start_line = tonumber(unescape_csv_field(fields[column_positions.capturestartline]))
-                    end
-                    if column_positions.captureendline and fields[column_positions.captureendline] and fields[column_positions.captureendline] ~= "" then
-                        capture_end_line = tonumber(unescape_csv_field(fields[column_positions.captureendline]))
-                    end
-                end
-                
-                local is_breakpoint = (is_breakpoint_str == "true")
-                
-                print("DEBUG: Importing " .. symbol_type .. " symbol " .. symbol .. " with slice_label '" .. slice_label .. "'")
-                
-                -- Validate essential data
-                if symbol and symbol ~= "" and instrument_index and slice_index and timing_line and timing_delay and original_distance then
-                    -- Initialize symbol data if not exists
-                    if not imported_symbols[symbol] then
-                        imported_symbols[symbol] = {
-                            symbol_type = symbol_type,
-                            instrument_index = instrument_index,
-                            tags = tags,  -- Store tags array
-                            color = color,
-                            dictionary = dictionary,  -- Phase 4: Store dictionary
-                            timing_data = {},
-                            saved_labels = {},
-                            source_metadata = nil
-                        }
-                        
-                        -- Add source metadata for range-captured symbols
-                        if symbol_type == "range_captured" and (source_pattern or source_track or capture_start_line or capture_end_line) then
-                            imported_symbols[symbol].source_metadata = {
-                                pattern_index = source_pattern,
-                                track_index = source_track,
-                                capture_info = {}
-                            }
-                            
-                            if capture_start_line or capture_end_line then
-                                imported_symbols[symbol].source_metadata.capture_info = {
-                                    start_line = capture_start_line,
-                                    end_line = capture_end_line
-                                }
-                            end
-                        end
-                    end
-                    
-                    -- Create timing entry with all available data
-                    -- For range-captured symbols, slice_index contains the actual instrument value (0-based)
-                    -- For breakpoint symbols, slice_index is the slice index
-                    local timing_entry = {
-                        instrument_value = slice_index,
-                        relative_line = timing_line,
-                        new_delay = timing_delay,
-                        original_line = original_line,
-                        original_delay = original_delay,
-                        original_distance = original_distance,
-                        source_instrument_index = instrument_index
-                    }
-                    
-                    -- For range-captured symbols, ensure source_instrument_index reflects the actual instrument
-                    if symbol_type == "range_captured" then
-                        -- slice_index contains the 0-based instrument value from the pattern
-                        -- Convert to 1-based for source_instrument_index
-                        timing_entry.source_instrument_index = slice_index + 1
-                    end
-                    
-                    -- Add note_value for range-captured symbols
-                    if note_value then
-                        timing_entry.note_value = note_value
-                    end
-                    
-                    -- Add Vol/Pan/FX values if present
-                    if volume_value then
-                        timing_entry.volume_value = volume_value
-                    end
-                    if panning_value then
-                        timing_entry.panning_value = panning_value
-                    end
-                    if effect_number_value then
-                        timing_entry.effect_number_value = effect_number_value
-                    end
-                    if effect_amount_value then
-                        timing_entry.effect_amount_value = effect_amount_value
-                    end
-                    
-                    -- Add enhanced content information
-                    timing_entry.has_note = has_note
-                    timing_entry.content_type = content_type
-                    timing_entry.breakpoint = timing_breakpoint  -- Per-timing breakpoint marker
-                    
-                    -- Add effect columns data if present
-                    if next(effect_columns_data) ~= nil then
-                        timing_entry.effect_columns = effect_columns_data
-                    end
-                    
-                    -- Extract all 12 note columns data
-                    local note_columns_data = {}
-                    for note_col = 1, 12 do
-                        local note_key = "notecolumn" .. note_col .. "note"
-                        local instrument_key = "notecolumn" .. note_col .. "instrument"
-                        local volume_key = "notecolumn" .. note_col .. "volume"
-                        local panning_key = "notecolumn" .. note_col .. "panning"
-                        local delay_key = "notecolumn" .. note_col .. "delay"
-                        local effect_number_key = "notecolumn" .. note_col .. "effectnumber"
-                        local effect_amount_key = "notecolumn" .. note_col .. "effectamount"
-                        
-                        local note_val = nil
-                        local instrument_val = nil
-                        local volume_val = nil
-                        local panning_val = nil
-                        local delay_val = nil
-                        local effect_number_val = nil
-                        local effect_amount_val = nil
-                        
-                        if column_positions[note_key] and fields[column_positions[note_key]] and fields[column_positions[note_key]] ~= "" then
-                            note_val = tonumber(unescape_csv_field(fields[column_positions[note_key]]))
-                        end
-                        if column_positions[instrument_key] and fields[column_positions[instrument_key]] and fields[column_positions[instrument_key]] ~= "" then
-                            instrument_val = tonumber(unescape_csv_field(fields[column_positions[instrument_key]]))
-                        end
-                        if column_positions[volume_key] and fields[column_positions[volume_key]] and fields[column_positions[volume_key]] ~= "" then
-                            volume_val = tonumber(unescape_csv_field(fields[column_positions[volume_key]]))
-                        end
-                        if column_positions[panning_key] and fields[column_positions[panning_key]] and fields[column_positions[panning_key]] ~= "" then
-                            panning_val = tonumber(unescape_csv_field(fields[column_positions[panning_key]]))
-                        end
-                        if column_positions[delay_key] and fields[column_positions[delay_key]] and fields[column_positions[delay_key]] ~= "" then
-                            delay_val = tonumber(unescape_csv_field(fields[column_positions[delay_key]]))
-                        end
-                        if column_positions[effect_number_key] and fields[column_positions[effect_number_key]] and fields[column_positions[effect_number_key]] ~= "" then
-                            effect_number_val = tonumber(unescape_csv_field(fields[column_positions[effect_number_key]]))
-                        end
-                        if column_positions[effect_amount_key] and fields[column_positions[effect_amount_key]] and fields[column_positions[effect_amount_key]] ~= "" then
-                            effect_amount_val = tonumber(unescape_csv_field(fields[column_positions[effect_amount_key]]))
-                        end
-                        
-                        -- Only store note column data if we have valid values
-                        if note_val or instrument_val or volume_val or panning_val or delay_val or effect_number_val or effect_amount_val then
-                            note_columns_data[note_col] = {
-                                note_value = note_val,
-                                instrument_value = instrument_val,
-                                volume_value = volume_val,
-                                panning_value = panning_val,
-                                delay_value = delay_val,
-                                effect_number_value = effect_number_val,
-                                effect_amount_value = effect_amount_val
-                            }
-                        end
-                    end
-                    
-                    -- Add note columns data if present
-                    if next(note_columns_data) ~= nil then
-                        timing_entry.note_columns = note_columns_data
-                    end
-                    
-                    table.insert(imported_symbols[symbol].timing_data, timing_entry)
-                    
-                    -- Add label data - FIXED: Use correct hex_key calculation for range symbols
-                    if slice_label ~= "" or is_breakpoint then
-                        local hex_key
-                        
-                        if symbol_type == "range_captured" and note_value then
-                            -- For range symbols, calculate hex_key using the same note-to-slice mapping
-                            local calculated_slice_index = 0
-                            if note_value >= 37 then
-                                calculated_slice_index = note_value - 36
-                            end
-                            hex_key = string.format("%02X", calculated_slice_index + 1)
-                            print("DEBUG: Range symbol " .. symbol .. " note " .. note_value .. " -> slice " .. calculated_slice_index .. " -> hex_key " .. hex_key)
-                        else
-                            -- For breakpoint symbols, use slice_index directly
-                            hex_key = string.format("%02X", slice_index + 1)
-                        end
-                        
-                        imported_symbols[symbol].saved_labels[hex_key] = {
-                            label = slice_label,
-                            breakpoint = is_breakpoint,
-                            instrument_index = instrument_index
-                        }
-                        
-                        print("DEBUG: Added label '" .. slice_label .. "' to symbol " .. symbol .. " hex_key " .. hex_key)
-                    end
-                else
-                    print("WARNING: Line " .. line_number .. " has invalid core data, skipping")
-                end
-            else
-                print("WARNING: Line " .. line_number .. " has insufficient fields, skipping")
-            end
-        end
-    end
-    
-    file:close()
-    
-    if next(imported_symbols) == nil then
-        renoise.app():show_warning("No valid symbol data found in file")
-        return
-    end
-    
-    -- Convert imported data to proper break_set format and update global registry
-    for symbol, symbol_data in pairs(imported_symbols) do
-        -- Create break_set structure
-        local break_set = {
-            timing = symbol_data.timing_data,
-            notes = {},
-            start_line = 1,
-            end_line = 64  -- Default values
-        }
-        
-        -- Create notes from timing data
-        for _, timing in ipairs(symbol_data.timing_data) do
-            local note_entry = {
-                line = timing.relative_line,
-                instrument_value = timing.instrument_value,
-                delay_value = timing.new_delay,
-                distance = timing.original_distance,
-                is_last = false
-            }
-            
-            -- Set note_value based on symbol type
-            if symbol_data.symbol_type == "range_captured" and timing.note_value then
-                note_entry.note_value = timing.note_value
-            else
-                note_entry.note_value = 48  -- C-4 default for breakpoint symbols
-            end
-            
-            table.insert(break_set.notes, note_entry)
-        end
-        
-        -- Adjust end_line based on actual content
-        if #break_set.notes > 0 then
-            local last_note = break_set.notes[#break_set.notes]
-            local distance_in_lines = math.floor(last_note.distance / 256)
-            break_set.end_line = last_note.line + distance_in_lines + 4 -- Add buffer
-        end
-        
-        -- Create registry entry with proper structure
-        local registry_entry = {
-            instrument_index = symbol_data.instrument_index,
-            break_set = break_set,
-            saved_labels = symbol_data.saved_labels,
-            tags = symbol_data.tags or (symbol_data.category and {symbol_data.category} or {}), -- Convert category to tags array
-            color = symbol_data.color or ""
-        }
-        
-        -- Add symbol type and source metadata for range-captured symbols
-        if symbol_data.symbol_type == "range_captured" then
-            registry_entry.symbol_type = "range_captured"
-            if symbol_data.source_metadata then
-                registry_entry.source_metadata = symbol_data.source_metadata
-            end
-        end
-        
-        -- Update global registry
-        global_symbol_registry[symbol] = registry_entry
-        
-        -- Phase 4: Assign to dictionary if specified
-        if symbol_data.dictionary and symbol_data.dictionary ~= "" then
-            -- Create dictionary if it doesn't exist
-            if not symbol_dictionaries[symbol_data.dictionary] then
-                create_dictionary(symbol_data.dictionary, "", "")
-            end
-            add_symbol_to_dictionary(symbol, symbol_data.dictionary)
-        end
-        
-        local label_count = 0
-        for _ in pairs(symbol_data.saved_labels) do label_count = label_count + 1 end
-        print("DEBUG: Imported symbol " .. symbol .. " with " .. label_count .. " labels")
-    end
-    
-    -- Save to preferences
-    save_global_symbol_registry()
-    
-    local symbol_count = 0
-    for _ in pairs(imported_symbols) do symbol_count = symbol_count + 1 end
-    
-    renoise.app():show_status(string.format("Imported %d symbols from CSV", symbol_count))
-    
-    -- Refresh main dialog if open
-    if dialog and dialog.visible then
-        -- Preserve all unsaved tag inputs before refresh
-        if current_dialog_vb then
-            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
-        end
-        dialog:close()
-        show_main_dialog()
-    end
-end
-
--- Import global symbol registry from JSON format
-function import_global_alphabet_json()
-    local filepath = renoise.app():prompt_for_filename_to_read({"*.json"}, "Import Global Alphabet (JSON)")
-    if not filepath or filepath == "" then return end
-    
-    local file, err = io.open(filepath, "r")
-    if not file then
-        renoise.app():show_error("Unable to open file: " .. tostring(err))
-        return
-    end
-    
-    local content = file:read("*all")
-    file:close()
-    
-    -- Parse JSON
-    local success, import_data = pcall(json.decode, content)
-    if not success then
-        renoise.app():show_error("Invalid JSON format: " .. tostring(import_data))
-        return
-    end
-    
-    -- Validate structure
-    if not import_data.symbols or type(import_data.symbols) ~= "table" then
-        renoise.app():show_error("Invalid JSON structure: Missing 'symbols' table")
-        return
-    end
-    
-    -- Check version for compatibility
-    local format_version = import_data.version or "1.0"
-    local is_legacy_format = (format_version == "1.0")
-    
-    local imported_count = 0
-    
-    -- Process each symbol
-    for symbol, symbol_data in pairs(import_data.symbols) do
-        if type(symbol_data) == "table" and 
-           symbol_data.instrument_index and 
-           ((symbol_data.notes and type(symbol_data.notes) == "table") or 
-            (symbol_data.timing_data and type(symbol_data.timing_data) == "table")) then
-            
-            local instrument_index = symbol_data.instrument_index
-            local symbol_type = symbol_data.symbol_type or "breakpoint_created"
-            local tags = symbol_data.tags or {}
-            -- Handle backward compatibility: convert old category to tags
-            if symbol_data.category and #tags == 0 then
-                tags = symbol_data.category ~= "" and {symbol_data.category} or {}
-            end
-            local color = symbol_data.color or ""
-            local dictionary = symbol_data.dictionary or ""  -- Phase 4: Extract dictionary
-            local timing_data = {}
-            local saved_labels = {}
-            local notes = {}
-            local source_metadata = nil
-            
-            -- Handle different data sources based on format version
-            local data_source = nil
-            if not is_legacy_format and symbol_data.timing_data then
-                -- New format: use timing_data for reconstruction
-                data_source = symbol_data.timing_data
-            elseif symbol_data.notes then
-                -- Legacy format or fallback: use notes array
-                data_source = symbol_data.notes
-            end
-            
-            if data_source then
-                -- Process timing/note data
-                for _, entry in ipairs(data_source) do
-                    if type(entry) == "table" then
-                        local slice_index, timing_line, timing_delay, original_distance, note_value
-                        local source_instrument_index = instrument_index
-                        
-                        -- Extract fields based on data source type
-                        if not is_legacy_format and entry.instrument_value then
-                            -- New timing_data format
-                            slice_index = entry.instrument_value
-                            timing_line = entry.relative_line
-                            timing_delay = entry.new_delay
-                            original_distance = entry.original_distance
-                            note_value = entry.note_value
-                            source_instrument_index = entry.source_instrument_index or instrument_index
-                        else
-                            -- Legacy notes format
-                            slice_index = entry.slice_index
-                            timing_line = entry.timing_line
-                            timing_delay = entry.timing_delay
-                            original_distance = entry.original_distance
-                            note_value = entry.note_value
-                            source_instrument_index = entry.source_instrument_index or instrument_index
-                        end
-                        
-                        -- Validate essential fields
-                        if slice_index and timing_line and timing_delay and original_distance then
-                            -- Create comprehensive timing entry
-                            local timing_entry = {
-                                instrument_value = slice_index,
-                                relative_line = timing_line,
-                                new_delay = timing_delay,
-                                original_line = entry.original_line,
-                                original_delay = entry.original_delay,
-                                original_distance = original_distance,
-                                source_instrument_index = source_instrument_index
-                            }
-                            
-                            -- For range-captured symbols, ensure proper instrument value handling
-                            if symbol_type == "range_captured" then
-                                -- slice_index should contain the 0-based instrument value for range symbols
-                                -- Ensure source_instrument_index is correctly set (1-based)
-                                if not is_legacy_format and entry.instrument_value and entry.source_instrument_index then
-                                    -- New format: instrument_value is the 0-based instrument, source_instrument_index is 1-based
-                                    timing_entry.instrument_value = entry.instrument_value
-                                    timing_entry.source_instrument_index = entry.source_instrument_index
-                                else
-                                    -- Legacy or converted: slice_index contains 0-based instrument value
-                                    timing_entry.source_instrument_index = slice_index + 1
-                                end
-                            end
-                            
-                            -- Add note_value if present
-                            if note_value then
-                                timing_entry.note_value = note_value
-                            end
-                            
-                            -- Add additional properties if they exist
-                            if entry.volume_value then
-                                timing_entry.volume_value = entry.volume_value
-                            end
-                            if entry.panning_value then
-                                timing_entry.panning_value = entry.panning_value
-                            end
-                            if entry.effect_number_value then
-                                timing_entry.effect_number_value = entry.effect_number_value
-                            end
-                            if entry.effect_amount_value then
-                                timing_entry.effect_amount_value = entry.effect_amount_value
-                            end
-                            if entry.effect_columns then
-                                timing_entry.effect_columns = entry.effect_columns
-                            end
-                            if entry.note_columns then
-                                timing_entry.note_columns = entry.note_columns
-                            end
-                            
-                            -- Add enhanced content information
-                            timing_entry.has_note = entry.has_note or false
-                            timing_entry.content_type = entry.content_type or "note"
-                            timing_entry.breakpoint = entry.breakpoint or entry.timing_breakpoint or false  -- Per-timing breakpoint marker
-                            
-                            -- Phase 5: Add multi-track information
-                            if entry.track_index then
-                                timing_entry.track_index = entry.track_index
-                            end
-                            timing_entry.track_offset = entry.track_offset or 0
-                            
-                            table.insert(timing_data, timing_entry)
-                            
-                            -- Create note entry
-                            local note_entry = {
-                                line = timing_line,
-                                instrument_value = slice_index,
-                                delay_value = timing_delay,
-                                distance = original_distance,
-                                is_last = false
-                            }
-                            
-                            -- Set note_value based on symbol type and available data
-                            if symbol_type == "range_captured" and note_value then
-                                note_entry.note_value = note_value
-                            else
-                                note_entry.note_value = 48  -- C-4 default for breakpoint symbols
-                            end
-                            
-                            -- Add note columns data if available
-                            if entry.note_columns then
-                                note_entry.note_columns = entry.note_columns
-                            end
-                            
-                            table.insert(notes, note_entry)
-                            
-                            -- Add label data for breakpoint symbols
-                            if symbol_type == "breakpoint_created" then
-                                local hex_key = string.format("%02X", slice_index + 1)
-                                saved_labels[hex_key] = {
-                                    label = entry.label or "",
-                                    breakpoint = entry.breakpoint or false,
-                                    instrument_index = instrument_index
-                                }
-                            end
-                        end
-                    end
-                end
-            end
-            
-            -- Extract saved_labels if provided (for new format)
-            if not is_legacy_format and symbol_data.saved_labels and type(symbol_data.saved_labels) == "table" then
-                saved_labels = symbol_data.saved_labels
-            end
-            
-            -- Extract source_metadata for range-captured symbols
-            -- Phase 5: Include multi-track metadata
-            if symbol_type == "range_captured" and symbol_data.source_metadata and type(symbol_data.source_metadata) == "table" then
-                source_metadata = {
-                    pattern_index = symbol_data.source_metadata.pattern_index,
-                    track_index = symbol_data.source_metadata.track_index,
-                    capture_info = symbol_data.source_metadata.capture_info,
-                    -- Phase 5: Multi-track metadata
-                    track_count = symbol_data.source_metadata.track_count,
-                    first_track_index = symbol_data.source_metadata.first_track_index,
-                    track_names = symbol_data.source_metadata.track_names,
-                    is_multi_track = symbol_data.source_metadata.is_multi_track
-                }
-            end
-            
-            if #timing_data > 0 then
-                -- Create break_set structure
-                local break_set = {
-                    timing = timing_data,
-                    notes = notes,
-                    start_line = 1,
-                    end_line = 64  -- Default values
-                }
-                
-                -- Adjust end_line based on actual content
-                if #notes > 0 then
-                    local last_note = notes[#notes]
-                    local distance_in_lines = math.floor(last_note.distance / 256)
-                    break_set.end_line = last_note.line + distance_in_lines + 4 -- Add buffer
-                end
-                
-                -- Phase 5: Add multi-track metadata to break_set
-                if symbol_data.track_count then
-                    break_set.track_count = symbol_data.track_count
-                end
-                if symbol_data.first_track_index then
-                    break_set.first_track_index = symbol_data.first_track_index
-                end
-                if symbol_data.track_names then
-                    break_set.track_names = symbol_data.track_names
-                end
-                if symbol_data.is_multi_track then
-                    break_set.is_multi_track = symbol_data.is_multi_track
-                end
-                
-                -- Create registry entry with proper structure
-                local registry_entry = {
-                    instrument_index = instrument_index,
-                    break_set = break_set,
-                    saved_labels = saved_labels,
-                    tags = tags,  -- Store tags array
-                    color = color
-                }
-                
-                -- Add symbol type and source metadata for range-captured symbols
-                if symbol_type == "range_captured" then
-                    registry_entry.symbol_type = "range_captured"
-                    if source_metadata then
-                        registry_entry.source_metadata = source_metadata
-                    end
-                end
-                
-                -- Update global registry
-                global_symbol_registry[symbol:upper()] = registry_entry
-                
-                -- Phase 4: Assign to dictionary if specified
-                if dictionary and dictionary ~= "" then
-                    -- Create dictionary if it doesn't exist
-                    if not symbol_dictionaries[dictionary] then
-                        create_dictionary(dictionary, "", "")
-                    end
-                    add_symbol_to_dictionary(symbol:upper(), dictionary)
-                end
-                
-                imported_count = imported_count + 1
-            end
-        end
-    end
-    
-    if imported_count == 0 then
-        renoise.app():show_warning("No valid symbol data found in JSON file")
-        return
-    end
-    
-    -- Phase 4: Import dictionaries if present
-    local dict_count = 0
-    if import_data.dictionaries and type(import_data.dictionaries) == "table" then
-        for dict_name, dict_data in pairs(import_data.dictionaries) do
-            if type(dict_data) == "table" then
-                -- Create or update dictionary
-                if not symbol_dictionaries[dict_name] then
-                    symbol_dictionaries[dict_name] = {
-                        name = dict_name,
-                        color = dict_data.color or "",
-                        symbols = {},  -- Symbols are assigned via symbol import
-                        created_at = dict_data.created_at or os.time(),
-                        description = dict_data.description or ""
-                    }
-                else
-                    -- Update existing dictionary properties
-                    symbol_dictionaries[dict_name].color = dict_data.color or symbol_dictionaries[dict_name].color
-                    symbol_dictionaries[dict_name].description = dict_data.description or symbol_dictionaries[dict_name].description
-                end
-                dict_count = dict_count + 1
-            end
-        end
-        if dict_count > 0 then
-            save_dictionaries()
-            print("DEBUG: Imported " .. dict_count .. " dictionaries from JSON")
-        end
-    end
-    
-    -- Save to preferences
-    save_global_symbol_registry()
-    
-    local status_msg = string.format("Imported %d symbols", imported_count)
-    if dict_count > 0 then
-        status_msg = status_msg .. string.format(" and %d dictionaries", dict_count)
-    end
-    status_msg = status_msg .. " from JSON"
-    renoise.app():show_status(status_msg)
-    
-    -- Refresh main dialog if open
-    if dialog and dialog.visible then
-        -- Preserve all unsaved tag inputs before refresh
-        if current_dialog_vb then
-            preserve_unsaved_tag_inputs(nil, current_dialog_vb)
-        end
-        dialog:close()
-        show_main_dialog()
-    end
-end
-
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 -- Show format selection dialog for import
 function import_global_alphabet()
     local vb = renoise.ViewBuilder()
@@ -5336,7 +2299,6 @@ local function safe_song_access(callback)
     end
 end
 
-<<<<<<< HEAD
 -- Compact behavior panel functions (use behavior_panels module)
 local function create_compact_overflow_section(vb)
     return behavior_panels.create_compact_overflow(vb)
@@ -5355,381 +2317,6 @@ local function create_compact_multi_track_distance_section(vb)
 end
 
 
-=======
--- Create compact overflow behavior section
-local function create_compact_overflow_section(vb)
-    return vb:column {
-        style = "group",
-        margin = 5,
-        width = 60,
-        vb:text {
-            text = "OF",
-            font = "bold",
-            style = "strong"
-        },
-        vb:space { height = 3 },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overflow_extend",
-                value = (current_overflow_behavior == overflow_behavior.EXTEND),
-                notifier = function(value)
-                    if value then
-                        current_overflow_behavior = overflow_behavior.EXTEND
-                        -- Uncheck other options
-                        vb.views.compact_overflow_next_pattern.value = false
-                        vb.views.compact_overflow_truncate.value = false
-                        vb.views.compact_overflow_loop.value = false
-                        vb.views.compact_overflow_insert.value = false
-                    end
-                end
-            },
-            vb:text { text = "E", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overflow_next_pattern",
-                value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN),
-                notifier = function(value)
-                    if value then
-                        current_overflow_behavior = overflow_behavior.NEXT_PATTERN
-                        -- Uncheck other options
-                        vb.views.compact_overflow_extend.value = false
-                        vb.views.compact_overflow_truncate.value = false
-                        vb.views.compact_overflow_loop.value = false
-                        vb.views.compact_overflow_insert.value = false
-                    end
-                end
-            },
-            vb:text { text = "N", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overflow_truncate",
-                value = (current_overflow_behavior == overflow_behavior.TRUNCATE),
-                notifier = function(value)
-                    if value then
-                        current_overflow_behavior = overflow_behavior.TRUNCATE
-                        -- Uncheck other options
-                        vb.views.compact_overflow_extend.value = false
-                        vb.views.compact_overflow_next_pattern.value = false
-                        vb.views.compact_overflow_loop.value = false
-                        vb.views.compact_overflow_insert.value = false
-                    end
-                end
-            },
-            vb:text { text = "T", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overflow_loop",
-                value = (current_overflow_behavior == overflow_behavior.LOOP),
-                notifier = function(value)
-                    if value then
-                        current_overflow_behavior = overflow_behavior.LOOP
-                        -- Uncheck other options
-                        vb.views.compact_overflow_extend.value = false
-                        vb.views.compact_overflow_next_pattern.value = false
-                        vb.views.compact_overflow_truncate.value = false
-                        vb.views.compact_overflow_insert.value = false
-                    end
-                end
-            },
-            vb:text { text = "L", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overflow_insert",
-                value = (current_overflow_behavior == overflow_behavior.INSERT),
-                notifier = function(value)
-                    if value then
-                        current_overflow_behavior = overflow_behavior.INSERT
-                        -- Uncheck other options
-                        vb.views.compact_overflow_extend.value = false
-                        vb.views.compact_overflow_next_pattern.value = false
-                        vb.views.compact_overflow_truncate.value = false
-                        vb.views.compact_overflow_loop.value = false
-                    end
-                end
-            },
-            vb:text { text = "I", width = 15 }
-        }
-    }
-end
-
--- Create compact overwrite behavior section
-local function create_compact_overwrite_section(vb)
-    return vb:column {
-        style = "group",
-        margin = 5,
-        width = 60,
-        vb:text {
-            text = "OB",
-            font = "bold",
-            style = "strong"
-        },
-        vb:space { height = 3 },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_sum",
-                value = (current_overwrite_behavior == overwrite_behavior.SUM),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.SUM
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_replace.value = false
-                        vb.views.compact_overwrite_substitute.value = false
-                        vb.views.compact_overwrite_retain.value = false
-                        vb.views.compact_overwrite_exclude.value = false
-                        vb.views.compact_overwrite_intersect.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.SUM then
-                        vb.views.compact_overwrite_sum.value = true
-                    end
-                end
-            },
-            vb:text { text = "+", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_replace",
-                value = (current_overwrite_behavior == overwrite_behavior.REPLACE),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.REPLACE
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_sum.value = false
-                        vb.views.compact_overwrite_substitute.value = false
-                        vb.views.compact_overwrite_retain.value = false
-                        vb.views.compact_overwrite_exclude.value = false
-                        vb.views.compact_overwrite_intersect.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.REPLACE then
-                        vb.views.compact_overwrite_replace.value = true
-                    end
-                end
-            },
-            vb:text { text = "R", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_substitute",
-                value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.SUBSTITUTE
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_sum.value = false
-                        vb.views.compact_overwrite_replace.value = false
-                        vb.views.compact_overwrite_retain.value = false
-                        vb.views.compact_overwrite_exclude.value = false
-                        vb.views.compact_overwrite_intersect.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.SUBSTITUTE then
-                        vb.views.compact_overwrite_substitute.value = true
-                    end
-                end
-            },
-            vb:text { text = "S", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_retain",
-                value = (current_overwrite_behavior == overwrite_behavior.RETAIN),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.RETAIN
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_sum.value = false
-                        vb.views.compact_overwrite_replace.value = false
-                        vb.views.compact_overwrite_substitute.value = false
-                        vb.views.compact_overwrite_exclude.value = false
-                        vb.views.compact_overwrite_intersect.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.RETAIN then
-                        vb.views.compact_overwrite_retain.value = true
-                    end
-                end
-            },
-            vb:text { text = "P", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_exclude",
-                value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.EXCLUDE
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_sum.value = false
-                        vb.views.compact_overwrite_replace.value = false
-                        vb.views.compact_overwrite_substitute.value = false
-                        vb.views.compact_overwrite_retain.value = false
-                        vb.views.compact_overwrite_intersect.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.EXCLUDE then
-                        vb.views.compact_overwrite_exclude.value = true
-                    end
-                end
-            },
-            vb:text { text = "E", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_overwrite_intersect",
-                value = (current_overwrite_behavior == overwrite_behavior.INTERSECT),
-                notifier = function(value)
-                    if value then
-                        current_overwrite_behavior = overwrite_behavior.INTERSECT
-                        -- Uncheck other options
-                        vb.views.compact_overwrite_sum.value = false
-                        vb.views.compact_overwrite_replace.value = false
-                        vb.views.compact_overwrite_substitute.value = false
-                        vb.views.compact_overwrite_retain.value = false
-                        vb.views.compact_overwrite_exclude.value = false
-                    elseif current_overwrite_behavior == overwrite_behavior.INTERSECT then
-                        vb.views.compact_overwrite_intersect.value = true
-                    end
-                end
-            },
-            vb:text { text = "I", width = 15 }
-        }
-    }
-end
-
--- Create compact instrument source behavior section
-local function create_compact_instrument_source_section(vb)
-    return vb:column {
-        style = "group",
-        margin = 5,
-        width = 60,
-        vb:text {
-            text = "IS",
-            font = "bold",
-            style = "strong"
-        },
-        vb:space { height = 3 },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_instrument_source_embedded",
-                value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED),
-                notifier = function(value)
-                    if value then
-                        current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
-                        -- Uncheck other option
-                        vb.views.compact_instrument_source_current.value = false
-                    elseif current_instrument_source_behavior == instrument_source_behavior.EMBEDDED then
-                        vb.views.compact_instrument_source_embedded.value = true
-                    end
-                end
-            },
-            vb:text { text = "E", width = 15 }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_instrument_source_current",
-                value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED),
-                notifier = function(value)
-                    if value then
-                        current_instrument_source_behavior = instrument_source_behavior.CURRENT_SELECTED
-                        -- Uncheck other option
-                        vb.views.compact_instrument_source_embedded.value = false
-                    elseif current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED then
-                        vb.views.compact_instrument_source_current.value = true
-                    end
-                end
-            },
-            vb:text { text = "C", width = 15 }
-        }
-    }
-end
-
--- Phase 5: Create compact multi-track distance section for collapsed view
-local function create_compact_multi_track_distance_section(vb)
-    return vb:column {
-        style = "group",
-        margin = 5,
-        width = 60,
-        vb:text {
-            text = "MT",
-            font = "bold",
-            style = "strong",
-            tooltip = "Multi-Track Distance Mode"
-        },
-        vb:space { height = 3 },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_mt_sync_first",
-                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST),
-                notifier = function(value)
-                    if value then
-                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
-                        vb.views.compact_mt_independent.value = false
-                        vb.views.compact_mt_sync_last.value = false
-                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST then
-                        vb.views.compact_mt_sync_first.value = true
-                    end
-                end
-            },
-            vb:text { text = "1", width = 10, tooltip = "Sync to First" }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_mt_independent",
-                value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT),
-                notifier = function(value)
-                    if value then
-                        current_multi_track_distance_mode = multi_track_distance_mode.INDEPENDENT
-                        vb.views.compact_mt_sync_first.value = false
-                        vb.views.compact_mt_sync_last.value = false
-                    elseif current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT then
-                        vb.views.compact_mt_independent.value = true
-                    end
-                end
-            },
-            vb:text { text = "I", width = 10, tooltip = "Independent" }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_mt_sync_last",
-                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST),
-                notifier = function(value)
-                    if value then
-                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_LAST
-                        vb.views.compact_mt_sync_first.value = false
-                        vb.views.compact_mt_independent.value = false
-                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST then
-                        vb.views.compact_mt_sync_last.value = true
-                    end
-                end
-            },
-            vb:text { text = "L", width = 10, tooltip = "Sync to Last" }
-        },
-        vb:row {
-            spacing = 5,
-            vb:checkbox {
-                id = "compact_mt_skip_blank",
-                value = current_ignore_blank_tracks,
-                notifier = function(value)
-                    current_ignore_blank_tracks = value
-                end
-            },
-            vb:text { text = "S", width = 10, tooltip = "Skip Blank Tracks at Capture" }
-        }
-    }
-end
-
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 -- Toggle UI collapse state
 local function toggle_ui_collapse(vb)
     ui_collapsed = not ui_collapsed
@@ -5768,7 +2355,6 @@ local function toggle_ui_collapse(vb)
         
         -- Overflow behavior
         if vb.views.compact_overflow_extend then
-<<<<<<< HEAD
             vb.views.compact_overflow_extend.value = (behaviors.is_overflow_extend())
         end
         if vb.views.compact_overflow_next then
@@ -5779,23 +2365,10 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.compact_overflow_loop then
             vb.views.compact_overflow_loop.value = (behaviors.is_overflow_loop())
-=======
-            vb.views.compact_overflow_extend.value = (current_overflow_behavior == overflow_behavior.EXTEND)
-        end
-        if vb.views.compact_overflow_next then
-            vb.views.compact_overflow_next.value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN)
-        end
-        if vb.views.compact_overflow_truncate then
-            vb.views.compact_overflow_truncate.value = (current_overflow_behavior == overflow_behavior.TRUNCATE)
-        end
-        if vb.views.compact_overflow_loop then
-            vb.views.compact_overflow_loop.value = (current_overflow_behavior == overflow_behavior.LOOP)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Overwrite behavior
         if vb.views.compact_overwrite_sum then
-<<<<<<< HEAD
             vb.views.compact_overwrite_sum.value = (behaviors.is_overwrite_sum())
         end
         if vb.views.compact_overwrite_replace then
@@ -5812,44 +2385,18 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.compact_overwrite_intersect then
             vb.views.compact_overwrite_intersect.value = (behaviors.is_overwrite_intersect())
-=======
-            vb.views.compact_overwrite_sum.value = (current_overwrite_behavior == overwrite_behavior.SUM)
-        end
-        if vb.views.compact_overwrite_replace then
-            vb.views.compact_overwrite_replace.value = (current_overwrite_behavior == overwrite_behavior.REPLACE)
-        end
-        if vb.views.compact_overwrite_substitute then
-            vb.views.compact_overwrite_substitute.value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE)
-        end
-        if vb.views.compact_overwrite_retain then
-            vb.views.compact_overwrite_retain.value = (current_overwrite_behavior == overwrite_behavior.RETAIN)
-        end
-        if vb.views.compact_overwrite_exclude then
-            vb.views.compact_overwrite_exclude.value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE)
-        end
-        if vb.views.compact_overwrite_intersect then
-            vb.views.compact_overwrite_intersect.value = (current_overwrite_behavior == overwrite_behavior.INTERSECT)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Instrument source behavior
         if vb.views.compact_instrument_source_embedded then
-<<<<<<< HEAD
             vb.views.compact_instrument_source_embedded.value = (behaviors.is_instrument_source_embedded())
         end
         if vb.views.compact_instrument_source_current then
             vb.views.compact_instrument_source_current.value = (behaviors.is_instrument_source_current())
-=======
-            vb.views.compact_instrument_source_embedded.value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED)
-        end
-        if vb.views.compact_instrument_source_current then
-            vb.views.compact_instrument_source_current.value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Multi-track distance mode
         if vb.views.compact_mt_sync_first then
-<<<<<<< HEAD
             vb.views.compact_mt_sync_first.value = (behaviors.is_multi_track_sync_first())
         end
         if vb.views.compact_mt_independent then
@@ -5860,25 +2407,12 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.compact_mt_skip_blank then
             vb.views.compact_mt_skip_blank.value = behaviors.get_ignore_blank_tracks()
-=======
-            vb.views.compact_mt_sync_first.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST)
-        end
-        if vb.views.compact_mt_independent then
-            vb.views.compact_mt_independent.value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT)
-        end
-        if vb.views.compact_mt_sync_last then
-            vb.views.compact_mt_sync_last.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST)
-        end
-        if vb.views.compact_mt_skip_blank then
-            vb.views.compact_mt_skip_blank.value = current_ignore_blank_tracks
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
     else
         -- Switching to expanded view - update expanded checkboxes to match current state
         
         -- Overflow behavior
         if vb.views.overflow_extend then
-<<<<<<< HEAD
             vb.views.overflow_extend.value = (behaviors.is_overflow_extend())
         end
         if vb.views.overflow_next_pattern then
@@ -5889,23 +2423,10 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.overflow_loop then
             vb.views.overflow_loop.value = (behaviors.is_overflow_loop())
-=======
-            vb.views.overflow_extend.value = (current_overflow_behavior == overflow_behavior.EXTEND)
-        end
-        if vb.views.overflow_next_pattern then
-            vb.views.overflow_next_pattern.value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN)
-        end
-        if vb.views.overflow_truncate then
-            vb.views.overflow_truncate.value = (current_overflow_behavior == overflow_behavior.TRUNCATE)
-        end
-        if vb.views.overflow_loop then
-            vb.views.overflow_loop.value = (current_overflow_behavior == overflow_behavior.LOOP)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Overwrite behavior
         if vb.views.overwrite_sum then
-<<<<<<< HEAD
             vb.views.overwrite_sum.value = (behaviors.is_overwrite_sum())
         end
         if vb.views.overwrite_replace then
@@ -5922,44 +2443,18 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.overwrite_intersect then
             vb.views.overwrite_intersect.value = (behaviors.is_overwrite_intersect())
-=======
-            vb.views.overwrite_sum.value = (current_overwrite_behavior == overwrite_behavior.SUM)
-        end
-        if vb.views.overwrite_replace then
-            vb.views.overwrite_replace.value = (current_overwrite_behavior == overwrite_behavior.REPLACE)
-        end
-        if vb.views.overwrite_substitute then
-            vb.views.overwrite_substitute.value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE)
-        end
-        if vb.views.overwrite_retain then
-            vb.views.overwrite_retain.value = (current_overwrite_behavior == overwrite_behavior.RETAIN)
-        end
-        if vb.views.overwrite_exclude then
-            vb.views.overwrite_exclude.value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE)
-        end
-        if vb.views.overwrite_intersect then
-            vb.views.overwrite_intersect.value = (current_overwrite_behavior == overwrite_behavior.INTERSECT)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Instrument source behavior
         if vb.views.instrument_source_embedded then
-<<<<<<< HEAD
             vb.views.instrument_source_embedded.value = (behaviors.is_instrument_source_embedded())
         end
         if vb.views.instrument_source_current then
             vb.views.instrument_source_current.value = (behaviors.is_instrument_source_current())
-=======
-            vb.views.instrument_source_embedded.value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED)
-        end
-        if vb.views.instrument_source_current then
-            vb.views.instrument_source_current.value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
         
         -- Multi-track distance mode
         if vb.views.mt_sync_first then
-<<<<<<< HEAD
             vb.views.mt_sync_first.value = (behaviors.is_multi_track_sync_first())
         end
         if vb.views.mt_independent then
@@ -5970,18 +2465,6 @@ local function toggle_ui_collapse(vb)
         end
         if vb.views.mt_ignore_blank_tracks then
             vb.views.mt_ignore_blank_tracks.value = behaviors.get_ignore_blank_tracks()
-=======
-            vb.views.mt_sync_first.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST)
-        end
-        if vb.views.mt_independent then
-            vb.views.mt_independent.value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT)
-        end
-        if vb.views.mt_sync_last then
-            vb.views.mt_sync_last.value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST)
-        end
-        if vb.views.mt_ignore_blank_tracks then
-            vb.views.mt_ignore_blank_tracks.value = current_ignore_blank_tracks
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         end
     end
 end
@@ -6136,15 +2619,9 @@ local function create_compact_right_column(vb)
             }
             
             -- Add dictionary color bar if symbol has a dictionary
-<<<<<<< HEAD
             local symbol_dictionary = dictionaries.get_for_symbol(symbol)
             if symbol_dictionary then
                 local dict_data = dictionaries.get(symbol_dictionary)
-=======
-            local symbol_dictionary = get_dictionary_for_symbol(symbol)
-            if symbol_dictionary then
-                local dict_data = get_dictionary_data(symbol_dictionary)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                 local dict_color = dict_data and dict_data.color or ""
                 
                 if dict_color and dict_color ~= "" and color_definitions[dict_color] then
@@ -6559,17 +3036,10 @@ local function create_symbol_editor_dialog()
                                 spacing = 10,
                                 vb:checkbox {
                                     id = "overflow_extend",
-<<<<<<< HEAD
                                     value = (behaviors.is_overflow_extend()),
                                     notifier = function(value)
                                         if value then
                                             behaviors.set_overflow(overflow_behavior.EXTEND)
-=======
-                                    value = (current_overflow_behavior == overflow_behavior.EXTEND),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overflow_behavior = overflow_behavior.EXTEND
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_truncate.value = false
                                             vb.views.overflow_loop.value = false
@@ -6586,17 +3056,10 @@ local function create_symbol_editor_dialog()
                                 spacing = 10,
                                 vb:checkbox {
                                     id = "overflow_next_pattern",
-<<<<<<< HEAD
                                     value = (behaviors.is_overflow_next_pattern()),
                                     notifier = function(value)
                                         if value then
                                             behaviors.set_overflow(overflow_behavior.NEXT_PATTERN)
-=======
-                                    value = (current_overflow_behavior == overflow_behavior.NEXT_PATTERN),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overflow_behavior = overflow_behavior.NEXT_PATTERN
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_truncate.value = false
                                             vb.views.overflow_loop.value = false
@@ -6613,17 +3076,10 @@ local function create_symbol_editor_dialog()
                                 spacing = 10,
                                 vb:checkbox {
                                     id = "overflow_truncate",
-<<<<<<< HEAD
                                     value = (behaviors.is_overflow_truncate()),
                                     notifier = function(value)
                                         if value then
                                             behaviors.set_overflow(overflow_behavior.TRUNCATE)
-=======
-                                    value = (current_overflow_behavior == overflow_behavior.TRUNCATE),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overflow_behavior = overflow_behavior.TRUNCATE
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_loop.value = false
@@ -6640,17 +3096,10 @@ local function create_symbol_editor_dialog()
                                 spacing = 10,
                                 vb:checkbox {
                                     id = "overflow_loop",
-<<<<<<< HEAD
                                     value = (behaviors.is_overflow_loop()),
                                     notifier = function(value)
                                         if value then
                                             behaviors.set_overflow(overflow_behavior.LOOP)
-=======
-                                    value = (current_overflow_behavior == overflow_behavior.LOOP),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overflow_behavior = overflow_behavior.LOOP
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_truncate.value = false
@@ -6667,17 +3116,10 @@ local function create_symbol_editor_dialog()
                                 spacing = 10,
                                 vb:checkbox {
                                     id = "overflow_insert",
-<<<<<<< HEAD
                                     value = (behaviors.is_overflow_insert()),
                                     notifier = function(value)
                                         if value then
                                             behaviors.set_overflow(overflow_behavior.INSERT)
-=======
-                                    value = (current_overflow_behavior == overflow_behavior.INSERT),
-                                    notifier = function(value)
-                                        if value then
-                                            current_overflow_behavior = overflow_behavior.INSERT
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             vb.views.overflow_extend.value = false
                                             vb.views.overflow_next_pattern.value = false
                                             vb.views.overflow_truncate.value = false
@@ -6713,27 +3155,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_sum",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_sum()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.SUM)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.SUM),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.SUM
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_replace.value = false
                                                 vb.views.overwrite_substitute.value = false
                                                 vb.views.overwrite_retain.value = false
                                                 vb.views.overwrite_exclude.value = false
                                                 vb.views.overwrite_intersect.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_sum() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.SUM then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = true
                                             end
                                         end
@@ -6747,27 +3178,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_replace",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_replace()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.REPLACE)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.REPLACE),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.REPLACE
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = false
                                                 vb.views.overwrite_substitute.value = false
                                                 vb.views.overwrite_retain.value = false
                                                 vb.views.overwrite_exclude.value = false
                                                 vb.views.overwrite_intersect.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_replace() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.REPLACE then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_replace.value = true
                                             end
                                         end
@@ -6781,27 +3201,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_substitute",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_substitute()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.SUBSTITUTE)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.SUBSTITUTE),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.SUBSTITUTE
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = false
                                                 vb.views.overwrite_replace.value = false
                                                 vb.views.overwrite_retain.value = false
                                                 vb.views.overwrite_exclude.value = false
                                                 vb.views.overwrite_intersect.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_substitute() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.SUBSTITUTE then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_substitute.value = true
                                             end
                                         end
@@ -6815,27 +3224,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_retain",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_retain()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.RETAIN)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.RETAIN),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.RETAIN
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = false
                                                 vb.views.overwrite_replace.value = false
                                                 vb.views.overwrite_substitute.value = false
                                                 vb.views.overwrite_exclude.value = false
                                                 vb.views.overwrite_intersect.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_retain() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.RETAIN then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_retain.value = true
                                             end
                                         end
@@ -6853,27 +3251,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_exclude",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_exclude()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.EXCLUDE)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.EXCLUDE),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.EXCLUDE
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = false
                                                 vb.views.overwrite_replace.value = false
                                                 vb.views.overwrite_substitute.value = false
                                                 vb.views.overwrite_retain.value = false
                                                 vb.views.overwrite_intersect.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_exclude() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.EXCLUDE then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_exclude.value = true
                                             end
                                         end
@@ -6887,27 +3274,16 @@ local function create_symbol_editor_dialog()
                                     spacing = 10,
                                     vb:checkbox {
                                         id = "overwrite_intersect",
-<<<<<<< HEAD
                                         value = (behaviors.is_overwrite_intersect()),
                                         notifier = function(value)
                                             if value then
                                                 behaviors.set_overwrite(overwrite_behavior.INTERSECT)
-=======
-                                        value = (current_overwrite_behavior == overwrite_behavior.INTERSECT),
-                                        notifier = function(value)
-                                            if value then
-                                                current_overwrite_behavior = overwrite_behavior.INTERSECT
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_sum.value = false
                                                 vb.views.overwrite_replace.value = false
                                                 vb.views.overwrite_substitute.value = false
                                                 vb.views.overwrite_retain.value = false
                                                 vb.views.overwrite_exclude.value = false
-<<<<<<< HEAD
                                             elseif behaviors.is_overwrite_intersect() then
-=======
-                                            elseif current_overwrite_behavior == overwrite_behavior.INTERSECT then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 vb.views.overwrite_intersect.value = true
                                             end
                                         end
@@ -6941,21 +3317,12 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "instrument_source_embedded",
-<<<<<<< HEAD
                                 value = (behaviors.is_instrument_source_embedded()),
                                 notifier = function(value)
                                     if value then
                                         behaviors.set_instrument_source(instrument_source_behavior.EMBEDDED)
                                         vb.views.instrument_source_current.value = false
                                     elseif behaviors.is_instrument_source_embedded() then
-=======
-                                value = (current_instrument_source_behavior == instrument_source_behavior.EMBEDDED),
-                                notifier = function(value)
-                                    if value then
-                                        current_instrument_source_behavior = instrument_source_behavior.EMBEDDED
-                                        vb.views.instrument_source_current.value = false
-                                    elseif current_instrument_source_behavior == instrument_source_behavior.EMBEDDED then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                         vb.views.instrument_source_embedded.value = true
                                     end
                                 end
@@ -6969,21 +3336,12 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "instrument_source_current",
-<<<<<<< HEAD
                                 value = (behaviors.is_instrument_source_current()),
                                 notifier = function(value)
                                     if value then
                                         behaviors.set_instrument_source(instrument_source_behavior.CURRENT_SELECTED)
                                         vb.views.instrument_source_embedded.value = false
                                     elseif behaviors.is_instrument_source_current() then
-=======
-                                value = (current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED),
-                                notifier = function(value)
-                                    if value then
-                                        current_instrument_source_behavior = instrument_source_behavior.CURRENT_SELECTED
-                                        vb.views.instrument_source_embedded.value = false
-                                    elseif current_instrument_source_behavior == instrument_source_behavior.CURRENT_SELECTED then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                         vb.views.instrument_source_current.value = true
                                     end
                                 end
@@ -7015,7 +3373,6 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "mt_sync_first",
-<<<<<<< HEAD
                                 value = (behaviors.is_multi_track_sync_first()),
                                 notifier = function(value)
                                     if value then
@@ -7023,15 +3380,6 @@ local function create_symbol_editor_dialog()
                                         vb.views.mt_independent.value = false
                                         vb.views.mt_sync_last.value = false
                                     elseif behaviors.is_multi_track_sync_first() then
-=======
-                                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST),
-                                notifier = function(value)
-                                    if value then
-                                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_FIRST
-                                        vb.views.mt_independent.value = false
-                                        vb.views.mt_sync_last.value = false
-                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_FIRST then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                         vb.views.mt_sync_first.value = true
                                     end
                                 end
@@ -7045,7 +3393,6 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "mt_independent",
-<<<<<<< HEAD
                                 value = (behaviors.is_multi_track_independent()),
                                 notifier = function(value)
                                     if value then
@@ -7053,15 +3400,6 @@ local function create_symbol_editor_dialog()
                                         vb.views.mt_sync_first.value = false
                                         vb.views.mt_sync_last.value = false
                                     elseif behaviors.is_multi_track_independent() then
-=======
-                                value = (current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT),
-                                notifier = function(value)
-                                    if value then
-                                        current_multi_track_distance_mode = multi_track_distance_mode.INDEPENDENT
-                                        vb.views.mt_sync_first.value = false
-                                        vb.views.mt_sync_last.value = false
-                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.INDEPENDENT then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                         vb.views.mt_independent.value = true
                                     end
                                 end
@@ -7075,7 +3413,6 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "mt_sync_last",
-<<<<<<< HEAD
                                 value = (behaviors.is_multi_track_sync_last()),
                                 notifier = function(value)
                                     if value then
@@ -7083,15 +3420,6 @@ local function create_symbol_editor_dialog()
                                         vb.views.mt_sync_first.value = false
                                         vb.views.mt_independent.value = false
                                     elseif behaviors.is_multi_track_sync_last() then
-=======
-                                value = (current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST),
-                                notifier = function(value)
-                                    if value then
-                                        current_multi_track_distance_mode = multi_track_distance_mode.SYNC_LAST
-                                        vb.views.mt_sync_first.value = false
-                                        vb.views.mt_independent.value = false
-                                    elseif current_multi_track_distance_mode == multi_track_distance_mode.SYNC_LAST then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                         vb.views.mt_sync_last.value = true
                                     end
                                 end
@@ -7106,15 +3434,9 @@ local function create_symbol_editor_dialog()
                             spacing = 10,
                             vb:checkbox {
                                 id = "mt_ignore_blank_tracks",
-<<<<<<< HEAD
                                 value = behaviors.get_ignore_blank_tracks(),
                                 notifier = function(value)
                                     behaviors.set_ignore_blank_tracks(value)
-=======
-                                value = current_ignore_blank_tracks,
-                                notifier = function(value)
-                                    current_ignore_blank_tracks = value
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                 end
                             },
                             vb:text {
@@ -7409,21 +3731,13 @@ local function create_symbol_editor_dialog()
                         -- Phase 4: Use dictionary-ordered symbols when dictionary view is enabled
                         local symbols_to_display
                         if dictionary_view_enabled then
-<<<<<<< HEAD
                             symbols_to_display = dictionaries.get_symbols_ordered()
-=======
-                            symbols_to_display = get_symbols_ordered_by_dictionary()
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                         else
                             -- Standard alphabet order
                             local all_symbols = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
                             symbols_to_display = {}
                             for _, s in ipairs(all_symbols) do
-<<<<<<< HEAD
                                 table.insert(symbols_to_display, {symbol = s, dictionary = dictionaries.get_for_symbol(s)})
-=======
-                                table.insert(symbols_to_display, {symbol = s, dictionary = get_dictionary_for_symbol(s)})
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                             end
                         end
                         
@@ -7502,11 +3816,7 @@ local function create_symbol_editor_dialog()
                                     -- Phase 4: Add dictionary indicator at TOP when dictionary view is enabled
                                     if dictionary_view_enabled then
                                         if symbol_dictionary then
-<<<<<<< HEAD
                                             local dict_data = dictionaries.get(symbol_dictionary)
-=======
-                                            local dict_data = get_dictionary_data(symbol_dictionary)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                             local dict_color = dict_data and dict_data.color or ""
                                             
                                             -- Add colored bar using canvas if dictionary has a color
@@ -7899,11 +4209,7 @@ local function create_symbol_editor_dialog()
                                                 id = "move_dropdown_" .. symbol,
                                                 width = organize_row_width - 30,
                                                 height = 20,
-<<<<<<< HEAD
                                                 items = registry.get_available_for_moving(symbol),
-=======
-                                                items = get_available_symbols_for_moving(symbol),
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                 value = 1  -- Default to "Select target..."
                                             },
                                             
@@ -7918,16 +4224,11 @@ local function create_symbol_editor_dialog()
                                                     local dropdown = vb.views["move_dropdown_" .. symbol]
                                                     if dropdown and dropdown.value > 1 then
                                                         local target_symbol = dropdown.items[dropdown.value]
-<<<<<<< HEAD
                                                         local success, err = registry.move_symbol(symbol, target_symbol, tag_editing_states, color_editing_states)
                                                         if success then
                                                             -- Clear local button reference
                                                             symbol_button_refs[symbol] = nil
                                                             renoise.app():show_status("Symbol " .. symbol .. " moved to " .. target_symbol)
-=======
-                                                        local success = move_symbol_to_position(symbol, target_symbol, vb)
-                                                        if success then
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                             -- Preserve unsaved tag inputs before refresh
                                                             if current_dialog_vb then
                                                                 preserve_unsaved_tag_inputs(nil, current_dialog_vb)
@@ -7937,11 +4238,8 @@ local function create_symbol_editor_dialog()
                                                                 dialog:close()
                                                                 show_main_dialog()
                                                             end
-<<<<<<< HEAD
                                                         else
                                                             renoise.app():show_warning(err or "Move failed")
-=======
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                         end
                                                     else
                                                         renoise.app():show_warning("Please select a target symbol first")
@@ -7992,26 +4290,16 @@ local function create_symbol_editor_dialog()
                                                 height = 20,
                                                 items = (function()
                                                     local items = {"-- None --"}
-<<<<<<< HEAD
                                                     local dict_names = dictionaries.get_all_names()
-=======
-                                                    local dict_names = get_all_dictionaries()
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                     for _, name in ipairs(dict_names) do
                                                         table.insert(items, name)
                                                     end
                                                     return items
                                                 end)(),
                                                 value = (function()
-<<<<<<< HEAD
                                                     local current_dict = dictionaries.get_for_symbol(symbol)
                                                     if current_dict then
                                                         local dict_names = dictionaries.get_all_names()
-=======
-                                                    local current_dict = get_dictionary_for_symbol(symbol)
-                                                    if current_dict then
-                                                        local dict_names = get_all_dictionaries()
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                         for i, name in ipairs(dict_names) do
                                                             if name == current_dict then
                                                                 return i + 1  -- +1 for "-- None --"
@@ -8023,21 +4311,12 @@ local function create_symbol_editor_dialog()
                                                 notifier = function(new_value)
                                                     if new_value == 1 then
                                                         -- Remove from dictionary
-<<<<<<< HEAD
                                                         dictionaries.remove_symbol(symbol)
                                                     else
                                                         local dict_names = dictionaries.get_all_names()
                                                         local selected_dict = dict_names[new_value - 1]
                                                         if selected_dict then
                                                             dictionaries.add_symbol(symbol, selected_dict)
-=======
-                                                        remove_symbol_from_current_dictionary(symbol)
-                                                    else
-                                                        local dict_names = get_all_dictionaries()
-                                                        local selected_dict = dict_names[new_value - 1]
-                                                        if selected_dict then
-                                                            add_symbol_to_dictionary(symbol, selected_dict)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
                                                         end
                                                     end
                                                     renoise.app():show_status("Dictionary updated for " .. symbol)
@@ -8292,11 +4571,7 @@ function show_main_dialog()
     -- Load global symbol registry on first dialog show
     if not tool_initialized then
         load_global_symbol_registry()
-<<<<<<< HEAD
         dictionaries.load()  -- Phase 4: Load dictionaries after registry
-=======
-        load_dictionaries()  -- Phase 4: Load dictionaries after registry
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
         tool_initialized = true
     else
         -- Ensure tag editing states are up to date
@@ -8316,7 +4591,6 @@ function show_main_dialog()
     
     -- Set up editor module references to main module functions (including global symbol registry)
     -- Phase 5: Added multi-track distance mode getters
-<<<<<<< HEAD
     editor.set_main_module_functions(
         behaviors.get_overflow, 
         behaviors.get_overflow_constants, 
@@ -8329,9 +4603,6 @@ function show_main_dialog()
         behaviors.get_multi_track_distance_mode, 
         behaviors.get_multi_track_distance_mode_constants
     )
-=======
-    editor.set_main_module_functions(get_overflow_behavior, get_overflow_behavior_constants, get_overwrite_behavior, get_overwrite_behavior_constants, get_instrument_source_behavior, get_instrument_source_behavior_constants, get_global_symbol_registry, get_symbol_instrument_mapping, get_multi_track_distance_mode, get_multi_track_distance_mode_constants)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 
     if dialog and dialog.visible then
         dialog:close()
@@ -8415,7 +4686,6 @@ local function safe_labeler_refresh()
     end
 end
 
-<<<<<<< HEAD
 -- Set up labeler callback to refresh main dialog and provide global symbol functions
 labeler.set_refresh_callback(safe_labeler_refresh)
 labeler.set_global_symbol_functions(
@@ -8438,75 +4708,6 @@ selection.set_global_symbol_functions(registry.get, registry.find_next_available
 selection.set_multi_track_mode_functions(behaviors.get_multi_track_distance_mode, behaviors.get_multi_track_distance_mode_constants)
 -- Set ignore blank tracks function for selection module
 selection.set_ignore_blank_tracks_function(behaviors.get_ignore_blank_tracks)
-=======
--- Get current overflow behavior setting
-function get_overflow_behavior()
-    return current_overflow_behavior
-end
-
--- Get overflow behavior constants for external access
-function get_overflow_behavior_constants()
-    return overflow_behavior
-end
-
--- Get current overwrite behavior setting
-function get_overwrite_behavior()
-    return current_overwrite_behavior
-end
-
--- Get overwrite behavior constants for external access
-function get_overwrite_behavior_constants()
-    return overwrite_behavior
-end
-
--- Get current instrument source behavior setting
-function get_instrument_source_behavior()
-    return current_instrument_source_behavior
-end
-
--- Get instrument source behavior constants for external access
-function get_instrument_source_behavior_constants()
-    return instrument_source_behavior
-end
-
--- Phase 5: Get multi-track distance mode for external access
-function get_multi_track_distance_mode()
-    return current_multi_track_distance_mode
-end
-
--- Phase 5: Get multi-track distance mode constants for external access
-function get_multi_track_distance_mode_constants()
-    return multi_track_distance_mode
-end
-
--- Get ignore blank tracks at capture setting
-function get_ignore_blank_tracks_at_capture()
-    return current_ignore_blank_tracks
-end
-
--- Set up labeler callback to refresh main dialog and provide global symbol functions
-labeler.set_refresh_callback(safe_labeler_refresh)
-labeler.set_global_symbol_functions(
-    get_global_symbol_registry, 
-    assign_symbols_to_instrument, 
-    save_global_symbol_registry,
-    get_custom_labels_data,
-    save_custom_labels_data,
-    get_show_label2,
-    save_show_label2,
-    get_show_advanced_data,
-    save_show_advanced_data
-)
--- Set preview symbol callback for symbol labeler
-labeler.set_preview_symbol_callback(preview_symbol)
-
--- Set up selection module functions
-selection.set_global_symbol_functions(get_global_symbol_registry, find_next_available_symbols, save_global_symbol_registry)
--- Phase 5: Set multi-track distance mode functions for selection module
-selection.set_multi_track_mode_functions(get_multi_track_distance_mode, get_multi_track_distance_mode_constants)
--- Set ignore blank tracks function for selection module
-selection.set_ignore_blank_tracks_function(get_ignore_blank_tracks_at_capture)
->>>>>>> 0e257091ce2d7c3e1b9c1af1b449c6227f8a66f1
 
 -- Add periodic check for when labeler closes to trigger additional refresh
 local labeler_was_open = false
