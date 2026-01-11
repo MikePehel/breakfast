@@ -15,7 +15,8 @@ local utils = require("lib/utils")
 --     color = string (from color_definitions),
 --     symbols = array (ordered),
 --     created_at = timestamp,
---     description = string
+--     description = string,
+--     key = number (0-119, MIDI note value for dictionary's root/key center, optional)
 -- }
 
 local symbol_dictionaries = {}
@@ -81,7 +82,7 @@ end
 
 -- Create a new dictionary
 -- Returns: success (boolean), error_message (string or nil)
-function dictionaries.create(name, color, description)
+function dictionaries.create(name, color, description, key)
     if not name or name == "" then
         return false, "Dictionary name cannot be empty"
     end
@@ -89,12 +90,21 @@ function dictionaries.create(name, color, description)
         return false, "Dictionary '" .. name .. "' already exists"
     end
     
+    -- Validate key if provided (must be 0-119)
+    if key ~= nil then
+        key = tonumber(key)
+        if not key or key < 0 or key > 119 then
+            key = nil
+        end
+    end
+    
     symbol_dictionaries[name] = {
         name = name,
         color = color or "",
         symbols = {},
         created_at = os.time(),
-        description = description or ""
+        description = description or "",
+        key = key
     }
     
     dictionaries.save()
@@ -163,6 +173,37 @@ function dictionaries.set_description(dict_name, description)
     symbol_dictionaries[dict_name].description = description or ""
     dictionaries.save()
     return true
+end
+
+-- Set dictionary key (MIDI note value for root/key center)
+-- Returns: success (boolean), error_message (string or nil)
+function dictionaries.set_key(dict_name, key)
+    if not symbol_dictionaries[dict_name] then
+        return false, "Dictionary '" .. dict_name .. "' not found"
+    end
+    
+    -- Validate key (must be nil or 0-119)
+    if key ~= nil then
+        key = tonumber(key)
+        if not key or key < 0 or key > 119 then
+            return false, "Key must be a MIDI note value between 0 and 119"
+        end
+    end
+    
+    symbol_dictionaries[dict_name].key = key
+    dictionaries.save()
+    print("DEBUG: Set key '" .. tostring(key) .. "' for dictionary '" .. dict_name .. "'")
+    return true
+end
+
+-- Get dictionary key (MIDI note value for root/key center)
+-- Returns: key (number 0-119) or nil if not set
+function dictionaries.get_key(dict_name)
+    local dict_data = symbol_dictionaries[dict_name]
+    if dict_data then
+        return dict_data.key
+    end
+    return nil
 end
 
 -- ============================================================================

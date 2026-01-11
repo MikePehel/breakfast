@@ -10,7 +10,7 @@ local json = require("json")
 -- CSV Header Definition
 -- ============================================================================
 
-local CSV_HEADER = "Symbol,Dictionary,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalLine,OriginalDelay,OriginalDistance,TimingBreakpoint,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine"
+local CSV_HEADER = "Symbol,Dictionary,DictionaryKey,Key,SymbolType,Tags,Color,InstrumentIndex,SliceIndex,SliceLabel,IsBreakpoint,TimingLine,TimingDelay,OriginalLine,OriginalDelay,OriginalDistance,TimingBreakpoint,NoteValue,VolumeValue,PanningValue,EffectNumber,EffectAmount,HasNote,ContentType,EffectColumn1Number,EffectColumn1Amount,EffectColumn2Number,EffectColumn2Amount,EffectColumn3Number,EffectColumn3Amount,EffectColumn4Number,EffectColumn4Amount,EffectColumn5Number,EffectColumn5Amount,EffectColumn6Number,EffectColumn6Amount,EffectColumn7Number,EffectColumn7Amount,EffectColumn8Number,EffectColumn8Amount,NoteColumn1Note,NoteColumn1Instrument,NoteColumn1Volume,NoteColumn1Panning,NoteColumn1Delay,NoteColumn1EffectNumber,NoteColumn1EffectAmount,NoteColumn2Note,NoteColumn2Instrument,NoteColumn2Volume,NoteColumn2Panning,NoteColumn2Delay,NoteColumn2EffectNumber,NoteColumn2EffectAmount,NoteColumn3Note,NoteColumn3Instrument,NoteColumn3Volume,NoteColumn3Panning,NoteColumn3Delay,NoteColumn3EffectNumber,NoteColumn3EffectAmount,NoteColumn4Note,NoteColumn4Instrument,NoteColumn4Volume,NoteColumn4Panning,NoteColumn4Delay,NoteColumn4EffectNumber,NoteColumn4EffectAmount,NoteColumn5Note,NoteColumn5Instrument,NoteColumn5Volume,NoteColumn5Panning,NoteColumn5Delay,NoteColumn5EffectNumber,NoteColumn5EffectAmount,NoteColumn6Note,NoteColumn6Instrument,NoteColumn6Volume,NoteColumn6Panning,NoteColumn6Delay,NoteColumn6EffectNumber,NoteColumn6EffectAmount,NoteColumn7Note,NoteColumn7Instrument,NoteColumn7Volume,NoteColumn7Panning,NoteColumn7Delay,NoteColumn7EffectNumber,NoteColumn7EffectAmount,NoteColumn8Note,NoteColumn8Instrument,NoteColumn8Volume,NoteColumn8Panning,NoteColumn8Delay,NoteColumn8EffectNumber,NoteColumn8EffectAmount,NoteColumn9Note,NoteColumn9Instrument,NoteColumn9Volume,NoteColumn9Panning,NoteColumn9Delay,NoteColumn9EffectNumber,NoteColumn9EffectAmount,NoteColumn10Note,NoteColumn10Instrument,NoteColumn10Volume,NoteColumn10Panning,NoteColumn10Delay,NoteColumn10EffectNumber,NoteColumn10EffectAmount,NoteColumn11Note,NoteColumn11Instrument,NoteColumn11Volume,NoteColumn11Panning,NoteColumn11Delay,NoteColumn11EffectNumber,NoteColumn11EffectAmount,NoteColumn12Note,NoteColumn12Instrument,NoteColumn12Volume,NoteColumn12Panning,NoteColumn12Delay,NoteColumn12EffectNumber,NoteColumn12EffectAmount,SourcePattern,SourceTrack,CaptureStartLine,CaptureEndLine"
 
 -- ============================================================================
 -- Helper Functions
@@ -115,6 +115,13 @@ function export.to_csv(filepath)
         local symbol_color = symbol_data.color or ""
         local symbol_tags = symbol_data.tags or {}
         local symbol_dictionary = dictionaries.get_for_symbol(symbol) or ""
+        local symbol_key = symbol_data.key -- Symbol's root note (MIDI 0-119 or nil)
+        
+        -- Get dictionary key if symbol belongs to a dictionary
+        local dictionary_key = nil
+        if symbol_dictionary ~= "" then
+            dictionary_key = dictionaries.get_key(symbol_dictionary)
+        end
         
         -- Convert tags to string
         local tags_string = #symbol_tags > 0 and table.concat(symbol_tags, ", ") or ""
@@ -162,10 +169,12 @@ function export.to_csv(filepath)
                 local effect_columns_data = extract_effect_columns(timing)
                 local note_columns_data = extract_note_columns(timing)
                 
-                -- Build values array
+                -- Build values array (order matches CSV_HEADER)
                 local values = {
                     symbol or "",
                     symbol_dictionary or "",
+                    dictionary_key or "",  -- DictionaryKey
+                    symbol_key or "",      -- Key (symbol's root note)
                     symbol_type or "",
                     tags_string or "",
                     symbol_color or "",
@@ -239,9 +248,23 @@ function export.to_json(filepath)
     
     -- Build export structure
     local export_data = {
-        version = "2.0",
+        version = "2.1",  -- Bumped version for key support
+        dictionaries = {},
         symbols = {}
     }
+    
+    -- Export dictionaries with their keys
+    local all_dictionaries = dictionaries.get_all()
+    for dict_name, dict_data in pairs(all_dictionaries) do
+        export_data.dictionaries[dict_name] = {
+            name = dict_data.name,
+            color = dict_data.color or "",
+            symbols = dict_data.symbols or {},
+            created_at = dict_data.created_at,
+            description = dict_data.description or "",
+            key = dict_data.key  -- Dictionary key center (MIDI 0-119 or nil)
+        }
+    end
     
     local global_registry = registry.get()
     
@@ -258,7 +281,8 @@ function export.to_json(filepath)
             tags = symbol_data.tags or {},
             color = symbol_data.color or "",
             dictionary = symbol_dictionary,
-            notes = {},
+            key = symbol_data.key,  -- Symbol root note (MIDI 0-119 or nil)
+            timing_data = {},  -- Original field name for WaveBreak compatibility
             source_metadata = symbol_data.source_metadata
         }
         
@@ -277,12 +301,12 @@ function export.to_json(filepath)
                 
                 local label_data = saved_labels[hex_key] or {}
                 
-                local note_entry = {
+                local timing_entry = {
                     slice_index = slice_index,
                     slice_label = label_data.label or "",
                     is_breakpoint = label_data.breakpoint or false,
-                    timing_line = timing.relative_line,
-                    timing_delay = timing.new_delay,
+                    relative_line = timing.relative_line,  -- Original field name
+                    new_delay = timing.new_delay,          -- Original field name
                     original_line = timing.original_line,
                     original_delay = timing.original_delay,
                     original_distance = timing.original_distance,
@@ -298,20 +322,20 @@ function export.to_json(filepath)
                 
                 -- Include source_instrument_index for range-captured
                 if timing.source_instrument_index then
-                    note_entry.source_instrument_index = timing.source_instrument_index
+                    timing_entry.source_instrument_index = timing.source_instrument_index
                 end
                 
                 -- Include effect columns
                 if timing.effect_columns then
-                    note_entry.effect_columns = timing.effect_columns
+                    timing_entry.effect_columns = timing.effect_columns
                 end
                 
                 -- Include note columns
                 if timing.note_columns then
-                    note_entry.note_columns = timing.note_columns
+                    timing_entry.note_columns = timing.note_columns
                 end
                 
-                table.insert(symbol_entry.notes, note_entry)
+                table.insert(symbol_entry.timing_data, timing_entry)
             end
         end
         
@@ -366,8 +390,29 @@ function export.from_json(filepath)
         return false
     end
     
-    if import_data.version ~= "2.0" then
+    -- Version check (2.0 and 2.1 are compatible, 2.1 adds key support)
+    if import_data.version ~= "2.0" and import_data.version ~= "2.1" then
         renoise.app():show_warning("Warning: JSON version mismatch. Import may not be complete.")
+    end
+    
+    -- Import dictionaries first (if present in 2.1+ format)
+    if import_data.dictionaries then
+        for dict_name, dict_data in pairs(import_data.dictionaries) do
+            if not dictionaries.exists(dict_name) then
+                -- Create dictionary with key if provided
+                dictionaries.create(
+                    dict_name,
+                    dict_data.color or "",
+                    dict_data.description or "",
+                    dict_data.key  -- May be nil
+                )
+            else
+                -- Update existing dictionary's key if provided
+                if dict_data.key then
+                    dictionaries.set_key(dict_name, dict_data.key)
+                end
+            end
+        end
     end
     
     -- Import symbols
@@ -380,41 +425,44 @@ function export.from_json(filepath)
                 symbol_type = symbol_entry.symbol_type,
                 tags = symbol_entry.tags or {},
                 color = symbol_entry.color or "",
+                key = symbol_entry.key,  -- Symbol root note (may be nil)
                 saved_labels = {},
                 source_metadata = symbol_entry.source_metadata
             }
             
-            -- Reconstruct break_set from notes
-            if symbol_entry.notes and #symbol_entry.notes > 0 then
+            -- Reconstruct break_set from timing_data (original) or notes (v2.1 legacy)
+            local timing_source = symbol_entry.timing_data or symbol_entry.notes
+            if timing_source and #timing_source > 0 then
                 local timing = {}
-                for _, note in ipairs(symbol_entry.notes) do
+                for _, entry in ipairs(timing_source) do
                     local timing_entry = {
-                        instrument_value = note.slice_index,
-                        relative_line = note.timing_line,
-                        new_delay = note.timing_delay,
-                        original_line = note.original_line,
-                        original_delay = note.original_delay,
-                        original_distance = note.original_distance,
-                        breakpoint = note.timing_breakpoint,
-                        note_value = note.note_value,
-                        volume_value = note.volume_value,
-                        panning_value = note.panning_value,
-                        effect_number_value = note.effect_number,
-                        effect_amount_value = note.effect_amount,
-                        has_note = note.has_note,
-                        content_type = note.content_type,
-                        source_instrument_index = note.source_instrument_index,
-                        effect_columns = note.effect_columns,
-                        note_columns = note.note_columns
+                        instrument_value = entry.slice_index,
+                        -- Support both original and v2.1 field names
+                        relative_line = entry.relative_line or entry.timing_line,
+                        new_delay = entry.new_delay or entry.timing_delay,
+                        original_line = entry.original_line,
+                        original_delay = entry.original_delay,
+                        original_distance = entry.original_distance,
+                        breakpoint = entry.timing_breakpoint,
+                        note_value = entry.note_value,
+                        volume_value = entry.volume_value,
+                        panning_value = entry.panning_value,
+                        effect_number_value = entry.effect_number,
+                        effect_amount_value = entry.effect_amount,
+                        has_note = entry.has_note,
+                        content_type = entry.content_type,
+                        source_instrument_index = entry.source_instrument_index,
+                        effect_columns = entry.effect_columns,
+                        note_columns = entry.note_columns
                     }
                     table.insert(timing, timing_entry)
                     
                     -- Rebuild saved_labels
-                    if note.slice_label and note.slice_label ~= "" then
-                        local hex_key = string.format("%02X", note.slice_index + 1)
+                    if entry.slice_label and entry.slice_label ~= "" then
+                        local hex_key = string.format("%02X", entry.slice_index + 1)
                         symbol_data.saved_labels[hex_key] = {
-                            label = note.slice_label,
-                            breakpoint = note.is_breakpoint
+                            label = entry.slice_label,
+                            breakpoint = entry.is_breakpoint
                         }
                     end
                 end
@@ -519,6 +567,7 @@ function export.from_csv(filepath)
     
     -- Collect data grouped by symbol
     local symbol_data = {}
+    local dictionary_keys = {}  -- Track dictionary keys from CSV
     local line_num = 1
     
     for line in file:lines() do
@@ -528,12 +577,38 @@ function export.from_csv(filepath)
         local symbol = fields[col_index["Symbol"]]
         if symbol and symbol ~= "" then
             if not symbol_data[symbol] then
+                -- Parse symbol key (MIDI 0-119 or nil)
+                local symbol_key = nil
+                if col_index["Key"] then
+                    local key_str = fields[col_index["Key"]] or ""
+                    if key_str ~= "" then
+                        symbol_key = tonumber(key_str)
+                        if symbol_key and (symbol_key < 0 or symbol_key > 119) then
+                            symbol_key = nil
+                        end
+                    end
+                end
+                
+                local dict_name = fields[col_index["Dictionary"]] or ""
+                
+                -- Track dictionary key if present
+                if dict_name ~= "" and col_index["DictionaryKey"] then
+                    local dict_key_str = fields[col_index["DictionaryKey"]] or ""
+                    if dict_key_str ~= "" then
+                        local dict_key = tonumber(dict_key_str)
+                        if dict_key and dict_key >= 0 and dict_key <= 119 then
+                            dictionary_keys[dict_name] = dict_key
+                        end
+                    end
+                end
+                
                 symbol_data[symbol] = {
                     symbol_type = fields[col_index["SymbolType"]] or "breakpoint_created",
                     instrument_index = tonumber(fields[col_index["InstrumentIndex"]]) or 1,
                     tags = {},
                     color = fields[col_index["Color"]] or "",
-                    dictionary = fields[col_index["Dictionary"]] or "",
+                    dictionary = dict_name,
+                    key = symbol_key,
                     saved_labels = {},
                     timing = {}
                 }
@@ -589,6 +664,7 @@ function export.from_csv(filepath)
             symbol_type = data.symbol_type,
             tags = data.tags,
             color = data.color,
+            key = data.key,
             saved_labels = data.saved_labels,
             break_set = { timing = data.timing }
         }
@@ -598,7 +674,15 @@ function export.from_csv(filepath)
         -- Handle dictionary
         if data.dictionary and data.dictionary ~= "" then
             if not dictionaries.exists(data.dictionary) then
-                dictionaries.create(data.dictionary, "", "")
+                -- Create dictionary with key if we captured one
+                local dict_key = dictionary_keys[data.dictionary]
+                dictionaries.create(data.dictionary, "", "", dict_key)
+            else
+                -- Update existing dictionary's key if we have one and it doesn't have one
+                local dict_key = dictionary_keys[data.dictionary]
+                if dict_key and not dictionaries.get_key(data.dictionary) then
+                    dictionaries.set_key(data.dictionary, dict_key)
+                end
             end
             dictionaries.add_symbol(symbol, data.dictionary)
         end

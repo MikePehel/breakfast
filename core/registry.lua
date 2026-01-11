@@ -17,7 +17,8 @@ local utils = require("lib/utils")
 --     tags = array of strings,
 --     color = string (color name),
 --     symbol_type = string (optional: "range_captured"),
---     source_metadata = table (optional)
+--     source_metadata = table (optional),
+--     key = number (0-119, MIDI note value for symbol's root note, optional)
 -- }
 
 local global_symbol_registry = {}
@@ -285,6 +286,36 @@ function registry.set_color(symbol, color)
     if global_symbol_registry[symbol] then
         global_symbol_registry[symbol].color = color or ""
     end
+end
+
+-- ============================================================================
+-- Key (MIDI root note for transpose support)
+-- ============================================================================
+
+-- Get key for a symbol (MIDI note value for symbol's root note)
+-- Returns: key (number 0-119) or nil if not set
+function registry.get_key(symbol)
+    local entry = global_symbol_registry[symbol]
+    return entry and entry.key or nil
+end
+
+-- Set key for a symbol (MIDI note value for symbol's root note)
+-- Returns: success (boolean), error_message (string or nil)
+function registry.set_key(symbol, key)
+    if not global_symbol_registry[symbol] then
+        return false, "Symbol '" .. symbol .. "' not found in registry"
+    end
+    
+    -- Validate key (must be nil or 0-119)
+    if key ~= nil then
+        key = tonumber(key)
+        if not key or key < 0 or key > 119 then
+            return false, "Key must be a MIDI note value between 0 and 119"
+        end
+    end
+    
+    global_symbol_registry[symbol].key = key
+    return true
 end
 
 -- ============================================================================
