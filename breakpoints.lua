@@ -292,20 +292,26 @@ local function get_line_analysis(phrase)
     print("DEBUG: Total notes found:", note_count, "all_instruments_empty:", all_instruments_empty)
 
     -- Interpolate slice values if needed
-    -- Interpolate slice values if needed
     if all_instruments_empty and note_count > 0 then
         print("DEBUG: Detected phrase with disabled/empty sample column, interpolating slice values from notes")
         for i = 1, lines do
             if analysis[i].note_value ~= renoise.PatternLine.EMPTY_NOTE then
                 -- Convert note value to slice index: C#2 (37) = slice 1, D-2 (38) = slice 2, etc.
-                local slice_index = analysis[i].note_value - 37  -- C#2 is note 37, maps to slice 0
-                if slice_index >= 0 and slice_index <= 127 then  -- Valid slice range
+                local slice_index = analysis[i].note_value - 36  -- C#2 is note 37, maps to slice 1
+                if slice_index >= 1 and slice_index <= 128 then  -- Valid slice range (1-based)
                     analysis[i].instrument_value = slice_index
+                    -- Also update note_columns[1] so preview playback works correctly
+                    if analysis[i].note_columns and analysis[i].note_columns[1] then
+                        analysis[i].note_columns[1].instrument_value = slice_index
+                    end
                     print("DEBUG: Line", i, "note", analysis[i].note_value, "-> slice", slice_index)
                 else
-                    print("DEBUG: Line", i, "note", analysis[i].note_value, "outside valid slice range (36-163), got", slice_index)
-                    -- Set to slice 0 for safety
-                    analysis[i].instrument_value = 0
+                    print("DEBUG: Line", i, "note", analysis[i].note_value, "outside valid slice range (37-164), got", slice_index)
+                    -- Set to slice 1 for safety (first slice)
+                    analysis[i].instrument_value = 1
+                    if analysis[i].note_columns and analysis[i].note_columns[1] then
+                        analysis[i].note_columns[1].instrument_value = 1
+                    end
                 end
             end
         end

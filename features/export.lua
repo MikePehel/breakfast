@@ -115,12 +115,29 @@ function export.to_csv(filepath)
         local symbol_color = symbol_data.color or ""
         local symbol_tags = symbol_data.tags or {}
         local symbol_dictionary = dictionaries.get_for_symbol(symbol) or ""
-        local symbol_key = symbol_data.key -- Symbol's root note (MIDI 0-119 or nil)
+        local raw_symbol_key = symbol_data.key -- Symbol's root note (MIDI 0-119 or nil)
         
         -- Get dictionary key if symbol belongs to a dictionary
+        -- Default to C-4 (MIDI 48) if dictionary exists but has no key set
         local dictionary_key = nil
+        local dictionary_key_export = ""
         if symbol_dictionary ~= "" then
             dictionary_key = dictionaries.get_key(symbol_dictionary)
+            -- If dictionary has a key, use it; otherwise default to C-4 (48)
+            dictionary_key_export = dictionary_key or 48
+        end
+        
+        -- Determine symbol key export value:
+        -- - If symbol has its own key: export that key
+        -- - If symbol belongs to dictionary but has no key: export "inherited"
+        -- - If symbol has no dictionary and no key: export "nil"
+        local symbol_key_export
+        if raw_symbol_key ~= nil then
+            symbol_key_export = raw_symbol_key
+        elseif symbol_dictionary ~= "" then
+            symbol_key_export = "inherited"
+        else
+            symbol_key_export = "nil"
         end
         
         -- Convert tags to string
@@ -173,8 +190,8 @@ function export.to_csv(filepath)
                 local values = {
                     symbol or "",
                     symbol_dictionary or "",
-                    dictionary_key or "",  -- DictionaryKey
-                    symbol_key or "",      -- Key (symbol's root note)
+                    dictionary_key_export or "",  -- DictionaryKey (defaults to 48/C-4 if dict exists but no key)
+                    symbol_key_export or "",      -- Key (symbol's root note, "inherited", or "nil")
                     symbol_type or "",
                     tags_string or "",
                     symbol_color or "",
@@ -254,6 +271,7 @@ function export.to_json(filepath)
     }
     
     -- Export dictionaries with their keys
+    -- Default to C-4 (MIDI 48) if dictionary has no key set
     local all_dictionaries = dictionaries.get_all()
     for dict_name, dict_data in pairs(all_dictionaries) do
         export_data.dictionaries[dict_name] = {
@@ -262,7 +280,7 @@ function export.to_json(filepath)
             symbols = dict_data.symbols or {},
             created_at = dict_data.created_at,
             description = dict_data.description or "",
-            key = dict_data.key  -- Dictionary key center (MIDI 0-119 or nil)
+            key = dict_data.key or 48  -- Dictionary key center (defaults to C-4/48 if not set)
         }
     end
     
@@ -274,6 +292,20 @@ function export.to_json(filepath)
         local saved_labels = symbol_data.saved_labels or {}
         local symbol_type = symbol_data.symbol_type or "breakpoint_created"
         local symbol_dictionary = dictionaries.get_for_symbol(symbol) or ""
+        local raw_symbol_key = symbol_data.key
+        
+        -- Determine symbol key export value:
+        -- - If symbol has its own key: export that key (number)
+        -- - If symbol belongs to dictionary but has no key: export "inherited" (string)
+        -- - If symbol has no dictionary and no key: export json.null (nil)
+        local symbol_key_export
+        if raw_symbol_key ~= nil then
+            symbol_key_export = raw_symbol_key
+        elseif symbol_dictionary ~= "" then
+            symbol_key_export = "inherited"
+        else
+            symbol_key_export = nil  -- Will be encoded as null in JSON
+        end
         
         local symbol_entry = {
             symbol_type = symbol_type,
@@ -281,7 +313,7 @@ function export.to_json(filepath)
             tags = symbol_data.tags or {},
             color = symbol_data.color or "",
             dictionary = symbol_dictionary,
-            key = symbol_data.key,  -- Symbol root note (MIDI 0-119 or nil)
+            key = symbol_key_export,  -- Symbol root note (number), "inherited" (string), or null
             timing_data = {},  -- Original field name for WaveBreak compatibility
             source_metadata = symbol_data.source_metadata
         }
@@ -419,13 +451,28 @@ function export.from_json(filepath)
     if import_data.symbols then
         local imported_count = 0
         for symbol, symbol_entry in pairs(import_data.symbols) do
+            -- Handle symbol key:
+            -- - Number (0-119): explicit key
+            -- - "inherited": symbol inherits from dictionary (store as nil internally)
+            -- - nil/null: no key
+            local symbol_key = symbol_entry.key
+            if symbol_key == "inherited" then
+                symbol_key = nil  -- "inherited" means no explicit key, will inherit from dictionary
+            elseif type(symbol_key) == "number" then
+                if symbol_key < 0 or symbol_key > 119 then
+                    symbol_key = nil
+                end
+            else
+                symbol_key = nil
+            end
+            
             -- Reconstruct symbol data
             local symbol_data = {
                 instrument_index = symbol_entry.instrument_index,
                 symbol_type = symbol_entry.symbol_type,
                 tags = symbol_entry.tags or {},
                 color = symbol_entry.color or "",
-                key = symbol_entry.key,  -- Symbol root note (may be nil)
+                key = symbol_key,  -- Symbol root note (nil if inherited or not set)
                 saved_labels = {},
                 source_metadata = symbol_entry.source_metadata
             }
@@ -577,21 +624,28 @@ function export.from_csv(filepath)
         local symbol = fields[col_index["Symbol"]]
         if symbol and symbol ~= "" then
             if not symbol_data[symbol] then
-                -- Parse symbol key (MIDI 0-119 or nil)
+                -- Parse symbol key:
+                -- - Number (0-119): explicit key
+                -- - "inherited": symbol inherits from dictionary (store as nil)
+                -- - "nil" or empty: no key (store as nil)
                 local symbol_key = nil
                 if col_index["Key"] then
                     local key_str = fields[col_index["Key"]] or ""
-                    if key_str ~= "" then
+                    if key_str ~= "" and key_str ~= "inherited" and key_str ~= "nil" then
                         symbol_key = tonumber(key_str)
                         if symbol_key and (symbol_key < 0 or symbol_key > 119) then
                             symbol_key = nil
                         end
                     end
+                    -- "inherited" and "nil" both result in symbol_key = nil
+                    -- The distinction is handled at export time based on dictionary membership
                 end
                 
                 local dict_name = fields[col_index["Dictionary"]] or ""
                 
                 -- Track dictionary key if present
+                -- Note: On import, we accept whatever key value is in the CSV
+                -- (including the default 48 that was exported)
                 if dict_name ~= "" and col_index["DictionaryKey"] then
                     local dict_key_str = fields[col_index["DictionaryKey"]] or ""
                     if dict_key_str ~= "" then
